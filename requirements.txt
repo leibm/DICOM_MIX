@@ -1,0 +1,17 @@
+# DICOM MIX Tools - Python Dependencies
+# Install: pip install -r requirements.txt
+
+# DICOM network communication (SCP/SCU)
+pynetdicom>=2.0.0
+
+# DICOM file parsing and modification
+pydicom>=2.3.0
+
+# GUI framework (Qt for Python)
+PySide6>=6.4.0
+
+# Matrix operations (DSA subtraction algorithm)
+numpy>=1.21.0
+
+# Packager (build Windows executable)
+pyinstaller>=5.0
