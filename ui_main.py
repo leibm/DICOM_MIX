@@ -853,7 +853,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
         self.right_dock.hide()
         # 关闭时同步更新按钮状态
-        self.right_dock.visibility.connect(lambda: self._update_panel_btn_states())
+        self.right_dock.visibilityChanged.connect(lambda: self._update_panel_btn_states())
 
     def _toggle_right_panel(self, tab_index: int):
         """切换右侧面板显示/隐藏，并定位到指定 Tab"""
