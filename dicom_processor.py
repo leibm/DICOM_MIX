@@ -102,14 +102,27 @@ class TargetPatientInfo:
         patient_id (str): 患者 ID
         accession_number (str): 检查号
         study_instance_uid (str): StudyInstanceUID（可为空，空时自动生成）
+        patient_sex (str): 性别 (M/F/O)
+        patient_birth_date (str): 出生日期 (YYYYMMDD)
+        patient_age (str): 年龄 (如 45Y)
+        inpatient_id (str): 住院号
+        series_number (str): 序列号/影像号
     """
 
     def __init__(self, patient_name: str = "", patient_id: str = "",
-                 accession_number: str = "", study_instance_uid: str = ""):
+                 accession_number: str = "", study_instance_uid: str = "",
+                 patient_sex: str = "", patient_birth_date: str = "",
+                 patient_age: str = "", inpatient_id: str = "",
+                 series_number: str = ""):
         self.patient_name = patient_name
         self.patient_id = patient_id
         self.accession_number = accession_number
         self.study_instance_uid = study_instance_uid
+        self.patient_sex = patient_sex
+        self.patient_birth_date = patient_birth_date
+        self.patient_age = patient_age
+        self.inpatient_id = inpatient_id
+        self.series_number = series_number
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TargetPatientInfo":
@@ -119,6 +132,11 @@ class TargetPatientInfo:
             patient_id=data.get("patient_id", ""),
             accession_number=data.get("accession_number", ""),
             study_instance_uid=data.get("study_instance_uid", ""),
+            patient_sex=data.get("patient_sex", ""),
+            patient_birth_date=data.get("patient_birth_date", ""),
+            patient_age=data.get("patient_age", ""),
+            inpatient_id=data.get("inpatient_id", ""),
+            series_number=data.get("series_number", ""),
         )
 
     def ensure_study_uid(self) -> str:
@@ -214,6 +232,18 @@ def process_single_file(
         ds.PatientID = target_info.patient_id
         ds.AccessionNumber = target_info.accession_number
         ds.StudyInstanceUID = target_info.ensure_study_uid()
+
+        # 可选字段：仅在非空时覆写
+        if target_info.patient_sex:
+            ds.PatientSex = target_info.patient_sex
+        if target_info.patient_birth_date:
+            ds.PatientBirthDate = target_info.patient_birth_date
+        if target_info.patient_age:
+            ds.PatientAge = target_info.patient_age
+        if target_info.inpatient_id:
+            ds.InstitutionName = target_info.inpatient_id  # 暂用 InstitutionName 存住院号
+        if target_info.series_number:
+            ds.SeriesNumber = target_info.series_number
 
         # ------------------------------------------------------------------
         # 4. 强制重新生成序列级和实例级 UID

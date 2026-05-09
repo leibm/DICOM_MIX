@@ -440,7 +440,7 @@ class DSAViewerWidget(QWidget):
         self._layout_image_area()
 
     def _layout_image_area(self):
-        """image_panel 填满可用空间，内部控件填满/悬浮。"""
+        """image_panel 填满可用空间，内部控件填满/悬浮，图像自适应居中。"""
         if not hasattr(self, "image_panel") or not self.image_panel.parentWidget():
             return
 
@@ -448,23 +448,23 @@ class DSAViewerWidget(QWidget):
         avail_w = panel.width()
         avail_h = panel.height()
 
-        # 填满可用空间，不再强制 4:3
-        pad = 0
-        self.image_panel.setGeometry(pad, pad, avail_w - pad * 2, avail_h - pad * 2)
-
-        w = self.image_panel.width()
-        h = self.image_panel.height()
+        # 填满可用空间
+        self.image_panel.setGeometry(0, 0, avail_w, avail_h)
 
         # graphics_view 填满 image_panel
-        self.graphics_view.setGeometry(0, 0, w, h)
+        self.graphics_view.setGeometry(0, 0, avail_w, avail_h)
 
-        # overlay_bar 悬浮在底部：更薄、更沉浸
+        # overlay_bar 悬浮在底部
         bar_h = 52
         margin_w = 8
         margin_h = 6
         self.overlay_bar.setGeometry(
-            margin_w, h - bar_h - margin_h, w - margin_w * 2, bar_h
+            margin_w, avail_h - bar_h - margin_h, avail_w - margin_w * 2, bar_h
         )
+
+        # 图像自适应居中
+        if self._raw_frames:
+            self.graphics_view.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
 
     # ---------- 事件过滤器：捕获 viewport 中键事件 ----------
 

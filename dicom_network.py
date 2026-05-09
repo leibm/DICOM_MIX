@@ -55,6 +55,13 @@ class DicomNetworkSignals(QObject):
     # 通用错误信息
     error_occurred = Signal(str)
 
+    # DSA C-FIND 查询结果（List[Dict]）
+    dsa_find_results_ready = Signal(list)
+    # DSA C-MOVE 拉取进度（当前数, 总数）
+    dsa_move_progress = Signal(int, int)
+    # DSA C-MOVE 拉取完成（成功数, 总数）
+    dsa_move_finished = Signal(int, int)
+
 
 # ------------------------------------------------------------------------------
 # PACS 节点配置
@@ -280,6 +287,100 @@ class CStoreWorker(QObject):
 
 
 # ------------------------------------------------------------------------------
+# C-MOVE 工作线程
+# ------------------------------------------------------------------------------
+
+class CMoveWorker(QObject):
+    """
+    C-MOVE SCU 工作线程。
+
+    向远端 DICOM 节点（如 DSA 工作站）发起 C-MOVE 请求，
+    指示远端将指定检查的图像推送到本机 SCP。
+
+    信号：
+        progress(int, int): 进度（当前数, 总数）
+        finished(int, int): 完成（成功数, 总数）
+        error(str): 错误信息
+    """
+
+    progress = Signal(int, int)
+    finished = Signal(int, int)
+    error = Signal(str)
+
+    def __init__(self, remote_config: PacsNodeConfig, study_uid: str,
+                 move_dest: str, parent: Optional[QObject] = None):
+        """
+        参数：
+            remote_config: 远端节点配置（DSA 工作站）
+            study_uid: 要拉取的 StudyInstanceUID
+            move_dest: C-MOVE 目标 AE Title（本机 SCP 的 AE Title）
+        """
+        super().__init__(parent)
+        self.remote = remote_config
+        self.study_uid = study_uid
+        self.move_dest = move_dest
+
+    def run(self):
+        """执行 C-MOVE 请求。"""
+        ae = None
+        assoc = None
+        try:
+            logger.info(f"开始 C-MOVE: study={self.study_uid}, 目标={self.move_dest}")
+            ae = AE(ae_title=self.remote.local_ae_title)
+
+            # 添加 C-MOVE 上下文
+            from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelMove
+            ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
+
+            assoc = ae.associate(
+                self.remote.host, self.remote.port,
+                ae_title=self.remote.ae_title
+            )
+            if not assoc.is_established:
+                error_msg = f"无法连接到远端节点进行 C-MOVE: {self.remote}"
+                logger.error(error_msg)
+                self.error.emit(error_msg)
+                return
+
+            # 构建 C-MOVE 请求数据集
+            from pydicom import Dataset
+            ds = Dataset()
+            ds.QueryRetrieveLevel = "STUDY"
+            ds.StudyInstanceUID = self.study_uid
+
+            # 发送 C-MOVE，move_dest 是目标 AE Title
+            responses = assoc.send_c_move(ds, move_dest=self.move_dest,
+                                          query_model=StudyRootQueryRetrieveInformationModelMove)
+
+            success = 0
+            total = 0
+            for status, identifier in responses:
+                if status:
+                    status_type = status.Status
+                    if status_type == 0x0000:
+                        success += 1
+                        total += 1
+                        self.progress.emit(success, total)
+                    elif status_type in (0xFF00, 0xFF01):
+                        # Pending - operation in progress
+                        total += 1
+                        self.progress.emit(success, total)
+                    else:
+                        total += 1
+                        logger.warning(f"C-MOVE 响应状态: 0x{status_type:04X}")
+
+            self.finished.emit(success, max(total, 1))
+            logger.info(f"C-MOVE 完成: 成功 {success}/{total}")
+
+        except Exception as e:
+            logger.exception("C-MOVE 异常")
+            self.error.emit(f"C-MOVE 异常: {e}")
+        finally:
+            if assoc and assoc.is_established:
+                assoc.release()
+
+
+# ------------------------------------------------------------------------------
 # 网络管理器（封装线程生命周期）
 # ------------------------------------------------------------------------------
 
@@ -296,15 +397,22 @@ class DicomNetworkManager(QObject):
         signals (DicomNetworkSignals): 统一信号接口
     """
 
-    def __init__(self, pacs_config: Optional[PacsNodeConfig] = None, parent: Optional[QObject] = None):
+    def __init__(self, pacs_config: Optional[PacsNodeConfig] = None,
+                 dsa_config: Optional[PacsNodeConfig] = None,
+                 parent: Optional[QObject] = None):
         super().__init__(parent)
         self.pacs_config = pacs_config or PacsNodeConfig()
+        self.dsa_config = dsa_config
         self.signals = DicomNetworkSignals()
 
         self._find_thread: Optional[QThread] = None
         self._find_worker: Optional[CFindWorker] = None
         self._store_thread: Optional[QThread] = None
         self._store_worker: Optional[CStoreWorker] = None
+        self._dsa_find_thread: Optional[QThread] = None
+        self._dsa_find_worker: Optional[CFindWorker] = None
+        self._dsa_move_thread: Optional[QThread] = None
+        self._dsa_move_worker: Optional[CMoveWorker] = None
 
     # ---------- C-FIND 接口 ----------
 
@@ -374,6 +482,80 @@ class DicomNetworkManager(QObject):
         if self._store_thread and self._store_thread.isRunning():
             self._store_thread.quit()
             self._store_thread.wait(2000)
+
+    # ---------- DSA C-FIND 接口 ----------
+
+    def query_dsa(self, query_dict: Dict):
+        """
+        向 DSA 工作站发起 C-FIND 查询。
+
+        参数：
+            query_dict: 查询条件字典
+        """
+        if not self.dsa_config:
+            self.signals.error_occurred.emit("未配置 DSA 节点")
+            return
+
+        self._cleanup_dsa_find()
+
+        self._dsa_find_thread = QThread(self)
+        self._dsa_find_worker = CFindWorker(self.dsa_config, query_dict)
+        self._dsa_find_worker.moveToThread(self._dsa_find_thread)
+
+        self._dsa_find_worker.finished.connect(self.signals.dsa_find_results_ready)
+        self._dsa_find_worker.error.connect(self.signals.error_occurred)
+
+        self._dsa_find_thread.started.connect(self._dsa_find_worker.run)
+        self._dsa_find_worker.finished.connect(self._dsa_find_thread.quit)
+        self._dsa_find_worker.finished.connect(self._dsa_find_worker.deleteLater)
+        self._dsa_find_thread.finished.connect(self._dsa_find_thread.deleteLater)
+
+        self._dsa_find_thread.start()
+        logger.info(f"已启动 DSA C-FIND，查询条件: {query_dict}")
+
+    def _cleanup_dsa_find(self):
+        """清理之前的 DSA C-FIND 线程。"""
+        if self._dsa_find_thread and self._dsa_find_thread.isRunning():
+            self._dsa_find_thread.quit()
+            self._dsa_find_thread.wait(2000)
+
+    # ---------- DSA C-MOVE 接口 ----------
+
+    def move_from_dsa(self, study_uid: str, move_dest_ae: str):
+        """
+        向 DSA 工作站发起 C-MOVE 请求，将指定检查拉取到本机 SCP。
+
+        参数：
+            study_uid: StudyInstanceUID
+            move_dest_ae: 本机 SCP 的 AE Title（C-MOVE 目标）
+        """
+        if not self.dsa_config:
+            self.signals.error_occurred.emit("未配置 DSA 节点")
+            return
+
+        self._cleanup_dsa_move()
+
+        self._dsa_move_thread = QThread(self)
+        self._dsa_move_worker = CMoveWorker(self.dsa_config, study_uid, move_dest_ae)
+        self._dsa_move_worker.moveToThread(self._dsa_move_thread)
+
+        self._dsa_move_worker.progress.connect(self.signals.dsa_move_progress)
+        self._dsa_move_worker.finished.connect(self.signals.dsa_move_finished)
+        self._dsa_move_worker.error.connect(self.signals.error_occurred)
+
+        self._dsa_move_thread.started.connect(self._dsa_move_worker.run)
+        self._dsa_move_worker.finished.connect(self._dsa_move_thread.quit)
+        self._dsa_move_worker.finished.connect(self._dsa_move_worker.deleteLater)
+        self._dsa_move_thread.finished.connect(self._dsa_move_thread.deleteLater)
+
+        self._dsa_move_thread.start()
+        logger.info(f"已启动 DSA C-MOVE，study={study_uid}, 目标={move_dest_ae}")
+
+    def _cleanup_dsa_move(self):
+        """清理之前的 DSA C-MOVE 线程。"""
+        if self._dsa_move_thread and self._dsa_move_thread.isRunning():
+            self._dsa_move_thread.quit()
+            self._dsa_move_thread.wait(2000)
 
 
 # ------------------------------------------------------------------------------

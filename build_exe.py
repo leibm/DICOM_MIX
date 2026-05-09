@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本
+PyInstaller 打包脚本（优化体积版）
 
 用法: python build_exe.py
 """
@@ -9,6 +9,38 @@ import os
 import sys
 import shutil
 import subprocess
+import zipfile
+import glob
+
+
+# 需要排除的模块（大幅减小体积）
+EXCLUDE_MODULES = [
+    "PyQt5", "PyQt6",
+    "matplotlib", "scipy", "pandas", "PIL", "pillow",
+    "tkinter", "_tkinter", "tcl", "tk",
+    "unittest", "test", "tests", "doctest",
+    "xmlrpc", "pydoc", "pdb", "profile", "cProfile",
+    "lib2to3", "ensurepip", "idlelib", "distutils",
+    "setuptools", "pip", "wheel", "pkg_resources",
+    "email", "html", "http", "urllib3", "requests",
+    "logging.config", "logging.handlers",
+    "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput",
+    "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation", "PySide6.Qt3DExtras",
+    "PySide6.QtBluetooth", "PySide6.QtCharts", "PySide6.QtDataVisualization",
+    "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtLocation",
+    "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+    "PySide6.QtNetwork", "PySide6.QtNfc", "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
+    "PySide6.QtPositioning", "PySide6.QtQuick", "PySide6.QtQuick3D",
+    "PySide6.QtQuickWidgets", "PySide6.QtRemoteObjects",
+    "PySide6.QtScxml", "PySide6.QtSensors", "PySide6.QtSerialBus",
+    "PySide6.QtSerialPort", "PySide6.QtShaderTools", "PySide6.QtSpatialAudio",
+    "PySide6.QtSql", "PySide6.QtStateMachine", "PySide6.QtSvg",
+    "PySide6.QtSvgWidgets", "PySide6.QtTest", "PySide6.QtTextToSpeech",
+    "PySide6.QtUiTools", "PySide6.QtWebChannel", "PySide6.QtWebEngine",
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebSockets", "PySide6.QtXml",
+]
 
 
 def clean():
@@ -32,19 +64,24 @@ def build():
         "--onedir",
         "--noconfirm",
         "--clean",
-        # 排除冲突的 Qt 绑定
-        "--exclude-module", "PyQt5",
-        "--exclude-module", "PyQt6",
-        # 隐藏导入（PyInstaller 可能检测不到动态导入的模块）
+    ]
+
+    # 排除不需要的模块
+    for mod in EXCLUDE_MODULES:
+        cmd.extend(["--exclude-module", mod])
+
+    # 隐藏导入
+    cmd.extend([
         "--hidden-import", "pydicom",
         "--hidden-import", "pynetdicom",
         "--hidden-import", "numpy",
         "--hidden-import", "PySide6.QtCore",
         "--hidden-import", "PySide6.QtGui",
         "--hidden-import", "PySide6.QtWidgets",
-        # 入口文件
-        "main.py",
-    ]
+    ])
+
+    # 入口文件
+    cmd.append("main.py")
 
     print("开始打包...")
     print(" ".join(cmd))
@@ -54,6 +91,60 @@ def build():
         sys.exit(1)
 
     print("\n打包完成。输出目录: dist/DICOM_MIX_Tools/")
+
+
+def clean_dist_extras():
+    """清理输出目录中不需要的文件以减小体积。"""
+    dist_dir = "dist/DICOM_MIX_Tools"
+    if not os.path.isdir(dist_dir):
+        return
+
+    removed = 0
+    # 删除 Qt 翻译文件（保留中文和英文）
+    qt_trans = os.path.join(dist_dir, "PySide6", "translations")
+    if os.path.isdir(qt_trans):
+        keep_lang = {"qt_zh_CN.qm", "qt_en.qm", "qtbase_zh_CN.qm", "qtbase_en.qm",
+                     "qtbase_zh_TW.qm", "qt_zh_TW.qm"}
+        for f in os.listdir(qt_trans):
+            if f not in keep_lang:
+                fp = os.path.join(qt_trans, f)
+                os.remove(fp)
+                removed += 1
+
+    # 删除 .pyi 类型提示文件
+    for pyi in glob.glob(os.path.join(dist_dir, "**", "*.pyi"), recursive=True):
+        os.remove(pyi)
+        removed += 1
+
+    # 删除 __pycache__
+    for root, dirs, _ in os.walk(dist_dir):
+        for d in dirs:
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                removed += 1
+
+    if removed:
+        print(f"已清理 {removed} 项多余文件")
+
+
+def create_archive():
+    """将输出目录压缩为 zip 文件。"""
+    dist_dir = "dist/DICOM_MIX_Tools"
+    zip_path = "dist/DICOM_MIX_Tools.zip"
+    if not os.path.isdir(dist_dir):
+        print("未找到打包目录，跳过压缩")
+        return
+
+    print(f"正在压缩 {zip_path} ...")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, dirs, files in os.walk(dist_dir):
+            for f in files:
+                fpath = os.path.join(root, f)
+                arcname = os.path.relpath(fpath, "dist")
+                zf.write(fpath, arcname)
+
+    zip_size = os.path.getsize(zip_path) / (1024 * 1024)
+    print(f"压缩完成: {zip_path} ({zip_size:.1f} MB)")
 
 
 def copy_readme():
@@ -85,5 +176,7 @@ DSA 图像路由与编辑工具
 if __name__ == "__main__":
     clean()
     build()
+    clean_dist_extras()
     copy_readme()
+    create_archive()
     print("\n全部完成！")

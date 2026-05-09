@@ -44,7 +44,8 @@ from dicom_processor import DicomProcessor
 from config import (
     DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
     DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
-    DEFAULT_LOCAL_SCU_AE_TITLE, DEFAULT_TEMP_DIR
+    DEFAULT_LOCAL_SCU_AE_TITLE, DEFAULT_TEMP_DIR,
+    DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
 )
 
 
@@ -84,8 +85,15 @@ class ApplicationController(QObject):
             port=net_cfg.get("pacs_port", DEFAULT_PACS_PORT),
             local_ae_title=net_cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
         )
+        dsa_config = PacsNodeConfig(
+            ae_title=net_cfg.get("dsa_ae_title", DEFAULT_DSA_AE_TITLE),
+            host=net_cfg.get("dsa_host", DEFAULT_DSA_HOST),
+            port=net_cfg.get("dsa_port", DEFAULT_DSA_PORT),
+            local_ae_title=net_cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
+        )
         self.network_mgr = DicomNetworkManager(
             pacs_config=pacs_config,
+            dsa_config=dsa_config,
             parent=self
         )
 
@@ -137,6 +145,17 @@ class ApplicationController(QObject):
             self.window.network_signals.error_occurred
         )
 
+        # DSA 信号转发
+        self.network_mgr.signals.dsa_find_results_ready.connect(
+            self.window.network_signals.dsa_find_results_ready
+        )
+        self.network_mgr.signals.dsa_move_progress.connect(
+            self.window.network_signals.dsa_move_progress
+        )
+        self.network_mgr.signals.dsa_move_finished.connect(
+            self.window.network_signals.dsa_move_finished
+        )
+
         # ===== 数据处理模块 → UI =====
         self.processor.signals.process_progress.connect(
             self.window.processor_signals.process_progress
@@ -156,6 +175,10 @@ class ApplicationController(QObject):
         self.window.request_pacs_find.connect(self.network_mgr.find_studies)
         self.window.request_process_and_store.connect(self._on_process_and_store)
         self.window.request_process_and_export.connect(self._on_process_and_export)
+
+        # DSA 请求
+        self.window.request_dsa_find.connect(self.network_mgr.query_dsa)
+        self.window.request_dsa_move.connect(self._on_dsa_move)
 
         # 网络配置变更时重新初始化网络模块
         self.window.network_config_changed.connect(self._on_network_config_changed)
@@ -257,6 +280,14 @@ class ApplicationController(QObject):
             )
             self.network_mgr.send_files(processed_files)
 
+    def _on_dsa_move(self, study_uid: str, move_dest_ae: str):
+        """
+        DSA C-MOVE 请求回调。
+        向 DSA 工作站发起 C-MOVE，指示其将图像推送到本机 SCP。
+        """
+        self.window.status_bar.showMessage(f"正在从 DSA 拉取检查 {study_uid}...")
+        self.network_mgr.move_from_dsa(study_uid, move_dest_ae)
+
     def _on_network_config_changed(self, cfg: dict):
         """
         网络配置变更回调。
@@ -265,15 +296,22 @@ class ApplicationController(QObject):
         - SCP 配置（AE Title / Port）：如果 SCP 正在运行，提示用户先停止再启动以应用新配置；
           如果未运行，则更新 input_mgr 的端口/AE Title。
         """
-        # 1. 重新初始化 NetworkManager（PACS + SCU）
+        # 1. 重新初始化 NetworkManager（PACS + SCU + DSA）
         pacs_config = PacsNodeConfig(
             ae_title=cfg.get("pacs_ae_title", DEFAULT_PACS_AE_TITLE),
             host=cfg.get("pacs_host", DEFAULT_PACS_HOST),
             port=cfg.get("pacs_port", DEFAULT_PACS_PORT),
             local_ae_title=cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
         )
+        dsa_config = PacsNodeConfig(
+            ae_title=cfg.get("dsa_ae_title", DEFAULT_DSA_AE_TITLE),
+            host=cfg.get("dsa_host", DEFAULT_DSA_HOST),
+            port=cfg.get("dsa_port", DEFAULT_DSA_PORT),
+            local_ae_title=cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
+        )
         self.network_mgr = DicomNetworkManager(
             pacs_config=pacs_config,
+            dsa_config=dsa_config,
             parent=self
         )
         # 重新连接网络模块信号到 UI
@@ -289,8 +327,20 @@ class ApplicationController(QObject):
         self.network_mgr.signals.error_occurred.connect(
             self.window.network_signals.error_occurred
         )
-        # 重新连接 PACS 查询请求
+        # DSA 信号
+        self.network_mgr.signals.dsa_find_results_ready.connect(
+            self.window.network_signals.dsa_find_results_ready
+        )
+        self.network_mgr.signals.dsa_move_progress.connect(
+            self.window.network_signals.dsa_move_progress
+        )
+        self.network_mgr.signals.dsa_move_finished.connect(
+            self.window.network_signals.dsa_move_finished
+        )
+        # 重新连接请求信号
         self.window.request_pacs_find.connect(self.network_mgr.find_studies)
+        self.window.request_dsa_find.connect(self.network_mgr.query_dsa)
+        self.window.request_dsa_move.connect(self._on_dsa_move)
 
         # 2. SCP 配置：如果未运行，直接更新；如果运行中，提示用户
         if self.input_mgr.is_scp_running():

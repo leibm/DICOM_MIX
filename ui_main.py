@@ -15,6 +15,7 @@ ui_main.py
 import os
 import shutil
 import logging
+import socket
 from typing import List, Dict, Optional, Callable
 
 logger = logging.getLogger("ui_main")
@@ -280,6 +281,11 @@ class DicomNetworkSignals(QObject):
     store_finished = Signal(int, int)      # (成功数, 总数)
     error_occurred = Signal(str)
 
+    # DSA 相关信号
+    dsa_find_results_ready = Signal(list)  # DSA C-FIND 结果
+    dsa_move_progress = Signal(int, int)   # DSA C-MOVE 进度
+    dsa_move_finished = Signal(int, int)   # DSA C-MOVE 完成
+
 
 class DicomProcessorSignals(QObject):
     """dicom_processor 模块与 UI 之间的通信信号"""
@@ -474,7 +480,8 @@ class StudyTreeModel(QAbstractItemModel):
             thumbnail = _generate_series_thumbnail(instances[0]) if instances else None
             series_item = StudyTreeItem({
                 "name": series.get("series_description", "未命名序列"),
-                "type": f"序列 ({series.get('modality', 'OT')})",
+                "type": "序列",
+                "modality": series.get('modality', 'OT'),
                 "count": len(instances),
                 "series_uid": series.get("series_uid"),
                 "instances": instances,
@@ -484,15 +491,50 @@ class StudyTreeModel(QAbstractItemModel):
             }, study_item)
             study_item.append_child(series_item)
 
+            # 添加第三级：Instance 节点
+            for idx, fpath in enumerate(instances, start=1):
+                # 从文件名提取 SOP UID（文件名格式为 {SOPUID}.dcm）
+                sop_uid = os.path.splitext(os.path.basename(fpath))[0]
+                instance_item = StudyTreeItem({
+                    "name": f"Image {idx}",
+                    "type": "影像",
+                    "count": "",
+                    "file_path": fpath,
+                    "instance_uid": sop_uid,
+                    "patient_name": patient_name,
+                    "patient_id": patient_id,
+                }, series_item)
+                series_item.append_child(instance_item)
+
         self.endResetModel()
 
     def get_checked_series(self) -> List[Dict]:
-        """获取所有被勾选（或半勾选）的序列节点数据，用于后续处理"""
+        """获取所有被勾选（或半勾选）的序列节点数据，用于后续处理。
+
+        返回值中每个序列字典额外包含 "selected_instances" 字段：
+        - 如果用户勾选了整个序列，selected_instances = 序列所有文件
+        - 如果用户只勾选了部分 Instance，selected_instances = 被勾选的文件
+        """
         results = []
         for study in self.root_item.children:
             for series in study.children:
-                if series.checked_state in (Qt.Checked, Qt.PartiallyChecked):
-                    results.append(series.data)
+                if series.checked_state == Qt.Checked:
+                    # 整个序列被勾选
+                    series_data = dict(series.data)
+                    series_data["selected_instances"] = list(series_data.get("instances", []))
+                    results.append(series_data)
+                elif series.checked_state == Qt.PartiallyChecked:
+                    # 部分 Instance 被勾选
+                    selected = []
+                    for inst in series.children:
+                        if inst.checked_state == Qt.Checked:
+                            fpath = inst.data.get("file_path", "")
+                            if fpath:
+                                selected.append(fpath)
+                    if selected:
+                        series_data = dict(series.data)
+                        series_data["selected_instances"] = selected
+                        results.append(series_data)
         return results
 
 
@@ -549,11 +591,13 @@ class MainWindow(QMainWindow):
     request_process_and_store = Signal(list, dict)  # (选中序列, 目标患者信息)
     request_process_and_export = Signal(list, dict, str)  # (选中序列, 目标患者信息, 输出目录)
     network_config_changed = Signal(dict)  # 网络配置变更通知
+    request_dsa_find = Signal(dict)        # 请求 DSA C-FIND (参数字典)
+    request_dsa_move = Signal(str, str)    # 请求 DSA C-MOVE (study_uid, move_dest_ae)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DICOM MIX Tools - DSA 图像路由与编辑")
-        self.resize(1400, 900)
+        self.resize(1600, 720)
 
         # 信号中心（供各工作线程回传状态）
         self.input_signals = DicomInputSignals()
@@ -659,7 +703,7 @@ class MainWindow(QMainWindow):
         right_widget = self._create_right_panel()
         splitter.addWidget(right_widget)
 
-        splitter.setSizes([320, 700, 380])  # 初始宽度比例
+        splitter.setSizes([300, 850, 400])  # 初始宽度比例
         self.centralWidget().layout().addWidget(splitter)
 
     def _create_left_panel(self) -> QWidget:
@@ -792,48 +836,125 @@ class MainWindow(QMainWindow):
         return widget
 
     def _create_manual_tab(self) -> QWidget:
-        """手动输入 Tab：必填项表单"""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-        layout.setLabelAlignment(Qt.AlignRight)
-        layout.setSpacing(10)
-
-        # 必填项：患者姓名
-        self.edit_manual_name = QLineEdit()
-        self.edit_manual_name.setPlaceholderText("请输入患者姓名 (Required)")
-        self.edit_manual_name.textChanged.connect(self._on_manual_input_changed)
-        layout.addRow("患者姓名 *:", self.edit_manual_name)
-
-        # 必填项：患者 ID
-        self.edit_manual_id = QLineEdit()
-        self.edit_manual_id.setPlaceholderText("请输入患者ID (Required)")
-        self.edit_manual_id.textChanged.connect(self._on_manual_input_changed)
-        layout.addRow("患者 ID *:", self.edit_manual_id)
-
-        # 必填项：检查号
-        self.edit_manual_acc = QLineEdit()
-        self.edit_manual_acc.setPlaceholderText("请输入检查号 (Required)")
-        self.edit_manual_acc.textChanged.connect(self._on_manual_input_changed)
-        layout.addRow("检查号 *:", self.edit_manual_acc)
-
-        # 可选：StudyInstanceUID（留空则系统自动生成）
-        self.edit_manual_study_uid = QLineEdit()
-        self.edit_manual_study_uid.setPlaceholderText("留空将由系统自动生成 StudyInstanceUID")
-        layout.addRow("Study UID:", self.edit_manual_study_uid)
-
-        # 验证提示标签
-        self.lbl_manual_hint = QLabel("")
-        self.lbl_manual_hint.setStyleSheet("color: red;")
-        layout.addRow(self.lbl_manual_hint)
-
-        layout.addRow(QLabel(""))  # 占位
-        return widget
-
-    def _create_network_config_tab(self) -> QWidget:
-        """网络配置 Tab：PACS 节点、本地 SCU/SCP 参数配置"""
+        """手动输入 Tab：患者信息分组表单"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        # --- 必填项 ---
+        g1 = QGroupBox("必填项（带 * 号）")
+        f1 = QFormLayout(g1)
+        f1.setLabelAlignment(Qt.AlignRight)
+        f1.setSpacing(6)
+
+        self.edit_manual_name = QLineEdit()
+        self.edit_manual_name.setPlaceholderText("患者姓名")
+        self.edit_manual_name.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("患者姓名 *:", self.edit_manual_name)
+
+        self.edit_manual_id = QLineEdit()
+        self.edit_manual_id.setPlaceholderText("患者ID")
+        self.edit_manual_id.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("患者 ID *:", self.edit_manual_id)
+
+        self.edit_manual_acc = QLineEdit()
+        self.edit_manual_acc.setPlaceholderText("检查号")
+        self.edit_manual_acc.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("检查号 *:", self.edit_manual_acc)
+
+        layout.addWidget(g1)
+
+        # --- 患者基本信息 ---
+        g2 = QGroupBox("患者信息（可选）")
+        f2 = QFormLayout(g2)
+        f2.setLabelAlignment(Qt.AlignRight)
+        f2.setSpacing(6)
+
+        # 性别 + 年龄 放同一行
+        sex_age = QHBoxLayout()
+        self.edit_manual_sex = QLineEdit()
+        self.edit_manual_sex.setPlaceholderText("M / F / O")
+        self.edit_manual_sex.setMaximumWidth(80)
+        sex_age.addWidget(self.edit_manual_sex)
+        sex_age.addWidget(QLabel("年龄:"))
+        self.edit_manual_age = QLineEdit()
+        self.edit_manual_age.setPlaceholderText("45Y")
+        self.edit_manual_age.setMaximumWidth(80)
+        sex_age.addWidget(self.edit_manual_age)
+        sex_age.addStretch()
+        f2.addRow("性别 / 年龄:", sex_age)
+
+        self.edit_manual_birth = QLineEdit()
+        self.edit_manual_birth.setPlaceholderText("YYYYMMDD，如 19800101")
+        f2.addRow("出生日期:", self.edit_manual_birth)
+
+        self.edit_manual_inpatient_id = QLineEdit()
+        self.edit_manual_inpatient_id.setPlaceholderText("住院号")
+        f2.addRow("住院号:", self.edit_manual_inpatient_id)
+
+        layout.addWidget(g2)
+
+        # --- 检查信息 ---
+        g3 = QGroupBox("检查信息（可选）")
+        f3 = QFormLayout(g3)
+        f3.setLabelAlignment(Qt.AlignRight)
+        f3.setSpacing(6)
+
+        self.edit_manual_series_number = QLineEdit()
+        self.edit_manual_series_number.setPlaceholderText("序列号 / 影像号")
+        f3.addRow("影像号:", self.edit_manual_series_number)
+
+        self.edit_manual_study_uid = QLineEdit()
+        self.edit_manual_study_uid.setPlaceholderText("留空将自动生成")
+        f3.addRow("Study UID:", self.edit_manual_study_uid)
+
+        layout.addWidget(g3)
+
+        # 验证提示
+        self.lbl_manual_hint = QLabel("")
+        self.lbl_manual_hint.setStyleSheet("color: red;")
+        layout.addWidget(self.lbl_manual_hint)
+
+        layout.addStretch()
+        return widget
+
+    @staticmethod
+    def _get_local_ips() -> list:
+        """获取本机所有 IPv4 地址。"""
+        ips = []
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip not in ips and not ip.startswith("127."):
+                    ips.append(ip)
+        except Exception:
+            pass
+        if not ips:
+            ips.append("127.0.0.1")
+        return ips
+
+    def _create_network_config_tab(self) -> QWidget:
+        """网络配置 Tab：本机信息、PACS、DSA、SCU/SCP 参数配置"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
+        # --- 本机网络信息 ---
+        g0 = QGroupBox("本机网络信息")
+        f0 = QFormLayout(g0)
+        f0.setLabelAlignment(Qt.AlignRight)
+        f0.setSpacing(6)
+
+        local_ips = self._get_local_ips()
+        self.lbl_local_ip = QLabel(", ".join(local_ips))
+        self.lbl_local_ip.setStyleSheet("font-weight: bold; color: #1976D2;")
+        f0.addRow("本机 IP:", self.lbl_local_ip)
+
+        self.lbl_local_scp_info = QLabel("")
+        f0.addRow("SCP 状态:", self.lbl_local_scp_info)
+
+        layout.addWidget(g0)
 
         # --- PACS 节点配置 ---
         g1 = QGroupBox("PACS 节点")
@@ -855,6 +976,65 @@ class MainWindow(QMainWindow):
         f1.addRow("PACS 端口:", self.spin_pacs_port)
 
         layout.addWidget(g1)
+
+        # --- DSA 主机/工作站配置 ---
+        g_dsa = QGroupBox("DSA 主机/工作站")
+        f_dsa = QFormLayout(g_dsa)
+        f_dsa.setLabelAlignment(Qt.AlignRight)
+        f_dsa.setSpacing(8)
+
+        self.edit_dsa_ae_title = QLineEdit()
+        self.edit_dsa_ae_title.setPlaceholderText("例如: DSA")
+        f_dsa.addRow("DSA AE Title:", self.edit_dsa_ae_title)
+
+        self.edit_dsa_host = QLineEdit()
+        self.edit_dsa_host.setPlaceholderText("例如: 192.168.1.100")
+        f_dsa.addRow("DSA 主机 IP:", self.edit_dsa_host)
+
+        self.spin_dsa_port = QSpinBox()
+        self.spin_dsa_port.setRange(1, 65535)
+        self.spin_dsa_port.setValue(11112)
+        f_dsa.addRow("DSA 端口:", self.spin_dsa_port)
+
+        # DSA 查询 + 拉取按钮
+        dsa_btn_layout = QHBoxLayout()
+        self.btn_dsa_find = QPushButton("查询 DSA")
+        self.btn_dsa_find.clicked.connect(self._on_dsa_find)
+        dsa_btn_layout.addWidget(self.btn_dsa_find)
+
+        self.btn_dsa_move = QPushButton("从 DSA 拉取")
+        self.btn_dsa_move.setObjectName("success")
+        self.btn_dsa_move.clicked.connect(self._on_dsa_move)
+        self.btn_dsa_move.setEnabled(False)
+        dsa_btn_layout.addWidget(self.btn_dsa_move)
+        dsa_btn_layout.addStretch()
+        f_dsa.addRow(dsa_btn_layout)
+
+        layout.addWidget(g_dsa)
+
+        # --- DSA 查询结果表格 ---
+        g_dsa_result = QGroupBox("DSA 查询结果")
+        dsa_result_layout = QVBoxLayout(g_dsa_result)
+
+        self.dsa_result_model = QStandardItemModel()
+        self.dsa_result_model.setHorizontalHeaderLabels(
+            ["患者姓名", "患者ID", "检查号", "检查日期", "检查UID"]
+        )
+        self.dsa_result_table = QTableView()
+        self.dsa_result_table.setModel(self.dsa_result_model)
+        self.dsa_result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.dsa_result_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.dsa_result_table.horizontalHeader().setStretchLastSection(True)
+        self.dsa_result_table.verticalHeader().setVisible(False)
+        self.dsa_result_table.setAlternatingRowColors(True)
+        self.dsa_result_table.clicked.connect(self._on_dsa_result_selected)
+        dsa_result_layout.addWidget(self.dsa_result_table)
+
+        self.lbl_dsa_status = QLabel("")
+        self.lbl_dsa_status.setStyleSheet("color: #666; font-size: 12px;")
+        dsa_result_layout.addWidget(self.lbl_dsa_status)
+
+        layout.addWidget(g_dsa_result)
 
         # --- 本地 SCU 配置 ---
         g2 = QGroupBox("本地 SCU (查询/发送)")
@@ -915,6 +1095,7 @@ class MainWindow(QMainWindow):
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
+            DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
         )
         settings = QSettings("MedicalSoftware", "DICOMMIXTools")
 
@@ -937,6 +1118,20 @@ class MainWindow(QMainWindow):
             int(settings.value("network/scp_port", DEFAULT_SCP_PORT))
         )
 
+        # DSA 配置
+        self.edit_dsa_ae_title.setText(
+            settings.value("network/dsa_ae_title", DEFAULT_DSA_AE_TITLE)
+        )
+        self.edit_dsa_host.setText(
+            settings.value("network/dsa_host", DEFAULT_DSA_HOST)
+        )
+        self.spin_dsa_port.setValue(
+            int(settings.value("network/dsa_port", DEFAULT_DSA_PORT))
+        )
+
+        # 更新 SCP 状态显示
+        self._update_scp_status_label()
+
     def _on_save_network_config(self):
         """保存网络配置到 QSettings 并发射变更信号。"""
         settings = QSettings("MedicalSoftware", "DICOMMIXTools")
@@ -946,6 +1141,9 @@ class MainWindow(QMainWindow):
         settings.setValue("network/scu_ae_title", self.edit_scu_ae_title.text().strip())
         settings.setValue("network/scp_ae_title", self.edit_scp_ae_title.text().strip())
         settings.setValue("network/scp_port", self.spin_scp_port.value())
+        settings.setValue("network/dsa_ae_title", self.edit_dsa_ae_title.text().strip())
+        settings.setValue("network/dsa_host", self.edit_dsa_host.text().strip())
+        settings.setValue("network/dsa_port", self.spin_dsa_port.value())
 
         self.lbl_network_hint.setText("配置已保存（重启后生效或立即应用）")
         QTimer.singleShot(3000, lambda: self.lbl_network_hint.setText(""))
@@ -959,6 +1157,7 @@ class MainWindow(QMainWindow):
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
+            DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
         )
         self.edit_pacs_ae_title.setText(DEFAULT_PACS_AE_TITLE)
         self.edit_pacs_host.setText(DEFAULT_PACS_HOST)
@@ -966,6 +1165,9 @@ class MainWindow(QMainWindow):
         self.edit_scu_ae_title.setText(DEFAULT_LOCAL_SCU_AE_TITLE)
         self.edit_scp_ae_title.setText(DEFAULT_SCP_AE_TITLE)
         self.spin_scp_port.setValue(DEFAULT_SCP_PORT)
+        self.edit_dsa_ae_title.setText(DEFAULT_DSA_AE_TITLE)
+        self.edit_dsa_host.setText(DEFAULT_DSA_HOST)
+        self.spin_dsa_port.setValue(DEFAULT_DSA_PORT)
         self._on_save_network_config()
 
     def get_network_config(self) -> dict:
@@ -977,7 +1179,88 @@ class MainWindow(QMainWindow):
             "scu_ae_title": self.edit_scu_ae_title.text().strip(),
             "scp_ae_title": self.edit_scp_ae_title.text().strip(),
             "scp_port": self.spin_scp_port.value(),
+            "dsa_ae_title": self.edit_dsa_ae_title.text().strip(),
+            "dsa_host": self.edit_dsa_host.text().strip(),
+            "dsa_port": self.spin_dsa_port.value(),
         }
+
+    def _update_scp_status_label(self):
+        """更新 SCP 状态显示标签。"""
+        ae = self.edit_scp_ae_title.text().strip()
+        port = self.spin_scp_port.value()
+        local_ips = self._get_local_ips()
+        self.lbl_local_scp_info.setText(
+            f"AE Title: {ae}  |  端口: {port}  |  IP: {', '.join(local_ips)}"
+        )
+
+    def _on_dsa_find(self):
+        """点击"查询 DSA"按钮，向 DSA 工作站发送 C-FIND。"""
+        query = {
+            "patient_name": "",
+            "patient_id": "",
+            "accession_number": "",
+        }
+        self.dsa_result_model.removeRows(0, self.dsa_result_model.rowCount())
+        self.lbl_dsa_status.setText("正在查询 DSA 工作站...")
+        self.btn_dsa_find.setEnabled(False)
+        self.request_dsa_find.emit(query)
+
+    def on_dsa_find_results(self, results: list):
+        """接收 DSA C-FIND 结果并填充表格。"""
+        self.btn_dsa_find.setEnabled(True)
+        self.dsa_result_model.removeRows(0, self.dsa_result_model.rowCount())
+
+        if not results:
+            self.lbl_dsa_status.setText("未找到匹配的检查")
+            return
+
+        for result in results:
+            row = [
+                QStandardItem(result.get("patient_name", "")),
+                QStandardItem(result.get("patient_id", "")),
+                QStandardItem(result.get("accession_number", "")),
+                QStandardItem(result.get("study_date", "")),
+                QStandardItem(result.get("study_instance_uid", "")),
+            ]
+            for item in row:
+                item.setEditable(False)
+            self.dsa_result_model.appendRow(row)
+
+        self.lbl_dsa_status.setText(f"找到 {len(results)} 个检查")
+        self.btn_dsa_move.setEnabled(True)
+
+    def _on_dsa_result_selected(self, index: QModelIndex):
+        """DSA 结果表格选中行变化。"""
+        row = index.row()
+        if row >= 0:
+            self.btn_dsa_move.setEnabled(True)
+
+    def _on_dsa_move(self):
+        """点击"从 DSA 拉取"按钮，发起 C-MOVE 请求。"""
+        selected = self.dsa_result_table.selectionModel().selectedRows()
+        if not selected:
+            QMessageBox.warning(self, "提示", "请先在表格中选择一个检查")
+            return
+
+        row = selected[0].row()
+        study_uid = self.dsa_result_model.item(row, 4).text()
+        if not study_uid:
+            QMessageBox.warning(self, "提示", "选中行缺少检查 UID")
+            return
+
+        scp_ae = self.edit_scp_ae_title.text().strip()
+        self.lbl_dsa_status.setText(f"正在从 DSA 拉取检查 {study_uid}...")
+        self.btn_dsa_move.setEnabled(False)
+        self.request_dsa_move.emit(study_uid, scp_ae)
+
+    def on_dsa_move_finished(self, success: int, total: int):
+        """DSA C-MOVE 完成回调。"""
+        self.btn_dsa_move.setEnabled(True)
+        self.lbl_dsa_status.setText(f"DSA 拉取完成: 成功 {success}/{total}")
+        QMessageBox.information(
+            self, "DSA 拉取完成",
+            f"从 DSA 工作站拉取完成\n成功: {success} / 总计: {total}"
+        )
 
     def _init_bottom_bar(self):
         """底部操作栏：处理并发送 / 处理并导出"""
@@ -1021,6 +1304,10 @@ class MainWindow(QMainWindow):
         self.network_signals.store_progress.connect(self._on_store_progress)
         self.network_signals.store_finished.connect(self._on_store_finished)
         self.network_signals.error_occurred.connect(self._show_error)
+
+        # DSA 信号
+        self.network_signals.dsa_find_results_ready.connect(self.on_dsa_find_results)
+        self.network_signals.dsa_move_finished.connect(self.on_dsa_move_finished)
 
         self.processor_signals.process_progress.connect(self.progress_bar.setValue)
         self.processor_signals.process_finished.connect(self._on_process_finished)
@@ -1145,7 +1432,14 @@ class MainWindow(QMainWindow):
         node_type = data.get("type", "")
         file_list: List[str] = []
 
-        if "序列" in node_type:
+        if "影像" in node_type:
+            # Instance 节点：只加载单张图像
+            fpath = data.get("file_path", "")
+            if fpath and os.path.isfile(fpath):
+                file_list = [fpath]
+                item.checked_state = Qt.Checked
+                self.tree_model.dataChanged.emit(current, current, [Qt.CheckStateRole])
+        elif "序列" in node_type:
             # 自动勾选该序列（关键：让用户点击即选中）
             item.checked_state = Qt.Checked
             self.tree_model.dataChanged.emit(current, current, [Qt.CheckStateRole])
@@ -1259,12 +1553,35 @@ class MainWindow(QMainWindow):
                 return None
 
             self.lbl_manual_hint.setText("")
-            return {
+            result = {
                 "patient_name": name,
                 "patient_id": pid,
                 "accession_number": acc,
-                "study_instance_uid": study_uid,  # 空字符串表示需自动生成
+                "study_instance_uid": study_uid,
             }
+
+            # 可选项：仅在非空时加入
+            sex = self.edit_manual_sex.text().strip()
+            if sex:
+                result["patient_sex"] = sex
+
+            birth = self.edit_manual_birth.text().strip()
+            if birth:
+                result["patient_birth_date"] = birth
+
+            age = self.edit_manual_age.text().strip()
+            if age:
+                result["patient_age"] = age
+
+            inpatient_id = self.edit_manual_inpatient_id.text().strip()
+            if inpatient_id:
+                result["inpatient_id"] = inpatient_id
+
+            series_number = self.edit_manual_series_number.text().strip()
+            if series_number:
+                result["series_number"] = series_number
+
+            return result
 
     def _update_target_summary(self, data: Dict):
         """更新底部目标患者摘要标签"""
@@ -1280,10 +1597,12 @@ class MainWindow(QMainWindow):
         name = self.edit_manual_name.text().strip()
         pid = self.edit_manual_id.text().strip()
         acc = self.edit_manual_acc.text().strip()
+        sex = self.edit_manual_sex.text().strip()
         if name or pid or acc:
-            self.lbl_target_summary.setText(
-                f"目标患者: {name} | ID: {pid} | Acc: {acc}"
-            )
+            parts = [f"目标患者: {name}", f"ID: {pid}", f"Acc: {acc}"]
+            if sex:
+                parts.append(f"性别: {sex}")
+            self.lbl_target_summary.setText(" | ".join(parts))
         else:
             self.lbl_target_summary.setText("目标患者: [未选择]")
 
