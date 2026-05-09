@@ -860,9 +860,13 @@ class MainWindow(QMainWindow):
         if self.right_dock.isVisible() and self.tab_widget.currentIndex() == tab_index:
             self.right_dock.hide()
         else:
+            # 记录当前窗口几何，防止 dock 展开时窗口突变
+            geo = self.geometry()
             self.tab_widget.setCurrentIndex(tab_index)
             self.right_dock.show()
             self.right_dock.raise_()
+            # 恢复窗口几何，让 dock 挤占中央区域而非撑大窗口
+            self.setGeometry(geo)
         self._update_panel_btn_states()
 
     def _update_panel_btn_states(self):
