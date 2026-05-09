@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QGroupBox, QSplitter, QFileDialog, QMessageBox,
     QCheckBox, QHeaderView, QAbstractItemView, QProgressBar,
     QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox,
-    QDockWidget, QSizePolicy
+    QDockWidget, QSizePolicy, QScrollArea
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer
 from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap
@@ -841,15 +841,24 @@ class MainWindow(QMainWindow):
         return widget
 
     def _init_right_dock(self):
-        """创建右侧可停靠面板，默认隐藏"""
+        """创建右侧可停靠面板（带滚动条），默认隐藏"""
         self.right_dock = QDockWidget("目标患者信息", self)
         self.right_dock.setAllowedAreas(Qt.RightDockWidgetArea)
         self.right_dock.setMinimumWidth(360)
         self.right_dock.setFeatures(
             QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable
         )
+
+        # 用 QScrollArea 包裹，内容超出时可滚动
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         right_content = self._create_right_panel()
-        self.right_dock.setWidget(right_content)
+        scroll.setWidget(right_content)
+        self.right_dock.setWidget(scroll)
+
         self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
         self.right_dock.hide()
         # 关闭时同步更新按钮状态
