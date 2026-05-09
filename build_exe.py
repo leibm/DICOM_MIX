@@ -22,7 +22,7 @@ EXCLUDE_MODULES = [
     "xmlrpc", "pydoc", "pdb", "profile", "cProfile",
     "lib2to3", "ensurepip", "idlelib", "distutils",
     "setuptools", "pip", "wheel", "pkg_resources",
-    "email", "html", "http", "urllib3", "requests",
+    "requests",
     "logging.config", "logging.handlers",
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput",
     "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation", "PySide6.Qt3DExtras",
@@ -45,14 +45,27 @@ EXCLUDE_MODULES = [
 
 def clean():
     """清理之前的构建产物。"""
+    import time
     for d in ["build", "dist"]:
         if os.path.isdir(d):
-            shutil.rmtree(d)
-            print(f"已清理 {d}/")
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(d)
+                    print(f"已清理 {d}/")
+                    break
+                except PermissionError:
+                    if attempt < 2:
+                        print(f"{d}/ 被占用，重试...")
+                        time.sleep(2)
+                    else:
+                        print(f"警告: 无法删除 {d}/，请关闭占用进程后重试")
     for f in os.listdir("."):
         if f.endswith(".spec"):
-            os.remove(f)
-            print(f"已清理 {f}")
+            try:
+                os.remove(f)
+                print(f"已清理 {f}")
+            except PermissionError:
+                pass
 
 
 def build():
