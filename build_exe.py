@@ -70,6 +70,7 @@ def clean():
 
 def build():
     """执行 PyInstaller 打包。"""
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "logo.ico")
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name", "DICOM_MIX_Tools",
@@ -78,6 +79,8 @@ def build():
         "--noconfirm",
         "--clean",
     ]
+    if os.path.isfile(icon_path):
+        cmd.extend(["--icon", icon_path])
 
     # 排除不需要的模块
     for mod in EXCLUDE_MODULES:
@@ -92,6 +95,12 @@ def build():
         "--hidden-import", "PySide6.QtGui",
         "--hidden-import", "PySide6.QtWidgets",
     ])
+
+    # 添加 assets 目录（图标等）
+    assets_src = os.path.join(os.path.dirname(__file__), "assets")
+    if os.path.isdir(assets_src):
+        # Windows: separator is ;
+        cmd.extend(["--add-data", f"{assets_src};assets"])
 
     # 入口文件
     cmd.append("main.py")

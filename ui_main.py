@@ -625,6 +625,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DICOM MIX Tools - DSA 图像路由与编辑")
         self.resize(1600, 720)
+        # 设置窗口图标
+        self._set_window_icon()
 
         # 信号中心（供各工作线程回传状态）
         self.input_signals = DicomInputSignals()
@@ -636,6 +638,24 @@ class MainWindow(QMainWindow):
         self._connect_internal_signals()
 
     # ---------- 初始化界面 ----------
+
+    @staticmethod
+    def _set_window_icon():
+        """尝试设置窗口图标（运行时和打包后均兼容）"""
+        app = QApplication.instance()
+        if app is None:
+            return
+        # 尝试多个路径：源码运行时、打包后
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "assets", "logo.ico"),
+            os.path.join(os.path.dirname(sys.executable), "assets", "logo.ico"),
+            os.path.join(os.path.dirname(sys.executable), "_internal", "assets", "logo.ico"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                from PySide6.QtGui import QIcon
+                app.setWindowIcon(QIcon(path))
+                break
 
     def _init_ui(self):
         self.setStyleSheet(MAIN_STYLE)
