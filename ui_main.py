@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTreeView, QTableView,
     QTabWidget, QGroupBox, QSplitter, QFileDialog, QMessageBox,
     QCheckBox, QHeaderView, QAbstractItemView, QProgressBar,
-    QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox
+    QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox,
+    QDockWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer
 from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap
@@ -132,6 +133,32 @@ QPushButton#success {
 }
 QPushButton#success:hover {
     background-color: #15803d;
+}
+QPushButton#panelBtn {
+    background-color: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+}
+QPushButton#panelBtn:hover {
+    background-color: #e5e7eb;
+}
+QPushButton#panelBtn:checked {
+    background-color: #2563eb;
+    color: white;
+    border-color: #2563eb;
+}
+QDockWidget {
+    titlebar-close-icon: none;
+    font-weight: 600;
+    font-size: 13px;
+}
+QDockWidget::title {
+    background: #f3f4f6;
+    padding: 6px 10px;
+    border-bottom: 1px solid #e5e7eb;
 }
 QLineEdit {
     background-color: #ffffff;
@@ -687,8 +714,32 @@ class MainWindow(QMainWindow):
         self.lbl_temp_dir.setStyleSheet("color: #9ca3af; font-size: 11px;")
         toolbar.addWidget(self.lbl_temp_dir)
 
+        # 弹性空间
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+
+        # 右侧面板切换按钮
+        self.btn_panel_pacs = QPushButton("PACS 查询")
+        self.btn_panel_pacs.setCheckable(True)
+        self.btn_panel_pacs.setObjectName("panelBtn")
+        self.btn_panel_pacs.clicked.connect(lambda: self._toggle_right_panel(0))
+        toolbar.addWidget(self.btn_panel_pacs)
+
+        self.btn_panel_manual = QPushButton("手动输入")
+        self.btn_panel_manual.setCheckable(True)
+        self.btn_panel_manual.setObjectName("panelBtn")
+        self.btn_panel_manual.clicked.connect(lambda: self._toggle_right_panel(1))
+        toolbar.addWidget(self.btn_panel_manual)
+
+        self.btn_panel_network = QPushButton("网络配置")
+        self.btn_panel_network.setCheckable(True)
+        self.btn_panel_network.setObjectName("panelBtn")
+        self.btn_panel_network.clicked.connect(lambda: self._toggle_right_panel(2))
+        toolbar.addWidget(self.btn_panel_network)
+
     def _init_central_splitter(self):
-        """中部主体：三栏分割面板（左: 源数据树, 中: DSA 预览, 右: 患者信息）"""
+        """中部主体：左右分割面板（左: 源数据树, 中: DSA 预览），右侧面板通过工具栏按钮弹出"""
         splitter = QSplitter(Qt.Horizontal)
 
         # -- 左侧：源数据树形区 --
@@ -699,12 +750,13 @@ class MainWindow(QMainWindow):
         center_widget = self._create_viewer_panel()
         splitter.addWidget(center_widget)
 
-        # -- 右侧：患者信息双模式区 --
-        right_widget = self._create_right_panel()
-        splitter.addWidget(right_widget)
-
-        splitter.setSizes([300, 850, 400])  # 初始宽度比例
+        splitter.setSizes([280, 900])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         self.centralWidget().layout().addWidget(splitter)
+
+        # -- 右侧：可停靠面板（默认隐藏） --
+        self._init_right_dock()
 
     def _create_left_panel(self) -> QWidget:
         """构建左侧源数据展示面板"""
@@ -763,9 +815,10 @@ class MainWindow(QMainWindow):
         return group
 
     def _create_right_panel(self) -> QWidget:
-        """构建右侧患者信息面板（双模式 TabWidget）"""
-        group = QGroupBox("目标患者信息")
-        layout = QVBoxLayout(group)
+        """构建右侧患者信息面板（TabWidget）"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(4, 4, 4, 4)
 
         self.tab_widget = QTabWidget()
 
@@ -785,7 +838,40 @@ class MainWindow(QMainWindow):
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         layout.addWidget(self.tab_widget)
-        return group
+        return widget
+
+    def _init_right_dock(self):
+        """创建右侧可停靠面板，默认隐藏"""
+        self.right_dock = QDockWidget("目标患者信息", self)
+        self.right_dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        self.right_dock.setMinimumWidth(360)
+        self.right_dock.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable
+        )
+        right_content = self._create_right_panel()
+        self.right_dock.setWidget(right_content)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
+        self.right_dock.hide()
+        # 关闭时同步更新按钮状态
+        self.right_dock.visibility.connect(lambda: self._update_panel_btn_states())
+
+    def _toggle_right_panel(self, tab_index: int):
+        """切换右侧面板显示/隐藏，并定位到指定 Tab"""
+        if self.right_dock.isVisible() and self.tab_widget.currentIndex() == tab_index:
+            self.right_dock.hide()
+        else:
+            self.tab_widget.setCurrentIndex(tab_index)
+            self.right_dock.show()
+            self.right_dock.raise_()
+        self._update_panel_btn_states()
+
+    def _update_panel_btn_states(self):
+        """根据右侧面板可见性和当前 Tab 更新工具栏按钮选中状态"""
+        visible = self.right_dock.isVisible()
+        current_tab = self.tab_widget.currentIndex() if visible else -1
+        self.btn_panel_pacs.setChecked(visible and current_tab == 0)
+        self.btn_panel_manual.setChecked(visible and current_tab == 1)
+        self.btn_panel_network.setChecked(visible and current_tab == 2)
 
     def _create_pacs_tab(self) -> QWidget:
         """PACS 查询 Tab：搜索框 + 表格结果"""
