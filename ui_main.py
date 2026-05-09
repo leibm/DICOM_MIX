@@ -13,6 +13,7 @@ ui_main.py
 """
 
 import os
+import sys
 import shutil
 import logging
 import socket
