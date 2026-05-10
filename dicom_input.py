@@ -100,17 +100,41 @@ def build_storage_path(base_dir: str, ds) -> str:
     return os.path.join(storage_dir, f"{sop_uid}.dcm")
 
 
-def scan_temp_directory(base_dir: str) -> List[Dict]:
+def scan_temp_directory(base_dir: str, date_filter: Optional[str] = None) -> List[Dict]:
     """
     扫描临时目录，按 Study -> Series -> Instance 的层级返回结构化数据。
-    返回格式与 ui_main.py 中 StudyTreeModel.add_study 期望的格式一致。
+    支持按 StudyDate 进行日期过滤。
+
+    参数：
+        base_dir: 临时目录路径
+        date_filter: 日期过滤条件
+            - "today": 今天
+            - "last3days": 最近3天
+            - "last7days": 最近7天
+            - "last30days": 最近30天
+            - "all" 或 None: 全部
 
     返回：
         List[Dict] - 每个元素代表一个 Study
     """
+    from datetime import datetime, timedelta
+
     studies = []
     if not os.path.isdir(base_dir):
         return studies
+
+    # 计算日期过滤的截止范围
+    cutoff_date = None
+    if date_filter and date_filter != "all":
+        today = datetime.now().date()
+        if date_filter == "today":
+            cutoff_date = today
+        elif date_filter == "last3days":
+            cutoff_date = today - timedelta(days=3)
+        elif date_filter == "last7days":
+            cutoff_date = today - timedelta(days=7)
+        elif date_filter == "last30days":
+            cutoff_date = today - timedelta(days=30)
 
     for study_uid in sorted(os.listdir(base_dir)):
         study_path = os.path.join(base_dir, study_uid)
@@ -120,6 +144,7 @@ def scan_temp_directory(base_dir: str) -> List[Dict]:
         # 尝试从 Study 下的任意文件中读取患者信息（取第一个合法文件）
         patient_name = "Unknown"
         patient_id = "N/A"
+        study_date = ""
         series_list = []
 
         for series_uid in sorted(os.listdir(study_path)):
@@ -136,7 +161,7 @@ def scan_temp_directory(base_dir: str) -> List[Dict]:
                 if not os.path.isfile(fpath):
                     continue
                 instances.append(fpath)
-                # 尝试从第一个文件中读取序列描述和模态
+                # 尝试从第一个文件中读取序列描述、模态和日期
                 if not series_description and is_valid_dicom(fpath):
                     try:
                         ds = dcmread(fpath, stop_before_pixels=True)
@@ -146,6 +171,8 @@ def scan_temp_directory(base_dir: str) -> List[Dict]:
                             patient_name = getattr(ds, "PatientName", "Unknown")
                         if not patient_id or patient_id == "N/A":
                             patient_id = getattr(ds, "PatientID", "N/A")
+                        if not study_date:
+                            study_date = getattr(ds, "StudyDate", "")
                     except Exception:
                         pass
 
@@ -157,11 +184,21 @@ def scan_temp_directory(base_dir: str) -> List[Dict]:
                     "instances": instances,
                 })
 
+        # 日期过滤
+        if cutoff_date and study_date:
+            try:
+                file_date = datetime.strptime(study_date, "%Y%m%d").date()
+                if file_date < cutoff_date:
+                    continue
+            except ValueError:
+                pass
+
         if series_list:
             studies.append({
                 "study_uid": study_uid,
                 "patient_name": str(patient_name),
                 "patient_id": str(patient_id),
+                "study_date": study_date,
                 "series_list": series_list,
             })
 
@@ -287,21 +324,20 @@ class DicomSCP(QObject):
         """
         try:
             ds = event.dataset
-            # 解决 pynetdicom 中 dataset 可能缺少 file_meta 的问题
-            # 某些实现需要显式添加 file_meta_info
-            if not hasattr(ds, "file_meta") or ds.file_meta is None:
-                ds.file_meta = ds.dataset.file_meta if hasattr(ds.dataset, "file_meta") else None
 
             # 生成保存路径
             file_path = build_storage_path(self.temp_dir, ds)
 
-            # 使用 pydicom 保存（保留原始编码和私有标签）
-            # 为了确保 file_meta 存在，手动构造
-            from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian
+            # pynetdicom 接收到的 dataset 可能缺少 file_meta，需要手动构造
+            from pydicom.uid import ImplicitVRLittleEndian
             if not hasattr(ds, "file_meta") or ds.file_meta is None:
                 ds.file_meta = Dataset()
-                ds.file_meta.MediaStorageSOPClassUID = getattr(ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.2")
-                ds.file_meta.MediaStorageSOPInstanceUID = getattr(ds, "SOPInstanceUID", "1.2.3")
+                ds.file_meta.MediaStorageSOPClassUID = getattr(
+                    ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.2"
+                )
+                ds.file_meta.MediaStorageSOPInstanceUID = getattr(
+                    ds, "SOPInstanceUID", "1.2.3"
+                )
                 ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
                 ds.file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.9.7756.1"
 
@@ -518,9 +554,13 @@ class DicomInputManager(QObject):
 
     # ---------- 目录扫描 ----------
 
-    def scan_temp_studies(self) -> List[Dict]:
-        """扫描临时目录，返回所有 Study 的结构化列表（供 UI 刷新树形控件）。"""
-        return scan_temp_directory(self.temp_dir)
+    def scan_temp_studies(self, date_filter: Optional[str] = None) -> List[Dict]:
+        """扫描临时目录，返回所有 Study 的结构化列表（供 UI 刷新树形控件）。
+
+        参数：
+            date_filter: 日期过滤条件（today/last3days/last7days/last30days/all）
+        """
+        return scan_temp_directory(self.temp_dir, date_filter)
 
 
 # ------------------------------------------------------------------------------

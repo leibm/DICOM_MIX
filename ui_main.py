@@ -6,8 +6,8 @@ ui_main.py
 负责构建 DICOM MIX Tools 的主窗口，包含：
 1. 顶部操作栏（SCP 启停、本地文件夹载入）
 2. 左侧源数据区（QTreeView 树形展示患者->序列->影像，支持复选框）
-3. 右侧信息区（QTabWidget 双模式：PACS 查询 / 手动输入）
-4. 底部输出区（发送到 PACS / 导出到本地）
+3. 右侧信息区（QTabWidget 双模式：主机查询 / 手动输入）
+4. 底部输出区（发送到主机 / 导出到本地）
 
 技术栈：PySide6
 """
@@ -27,10 +27,14 @@ from PySide6.QtWidgets import (
     QTabWidget, QGroupBox, QSplitter, QFileDialog, QMessageBox,
     QCheckBox, QHeaderView, QAbstractItemView, QProgressBar,
     QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox,
-    QDockWidget, QSizePolicy, QScrollArea
+    QDockWidget, QSizePolicy, QScrollArea,
+    QToolButton, QMenu, QComboBox, QDialog, QTextBrowser,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer
-from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer, QSize
+from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap, QIcon
+
+# Fluent Design 图标
+from qfluentwidgets import FluentIcon
 
 # pydicom 用于缩略图生成
 from pydicom import dcmread
@@ -78,218 +82,6 @@ def _generate_series_thumbnail(file_path: str, size: int = 48) -> Optional[QPixm
 # ------------------------------------------------------------------------------
 # 全局样式表 — 现代化医疗软件风格
 # ------------------------------------------------------------------------------
-MAIN_STYLE = """
-QMainWindow {
-    background-color: #f3f4f6;
-}
-QGroupBox {
-    background-color: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    margin-top: 10px;
-    padding-top: 8px;
-    font-weight: 600;
-    color: #111827;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 6px;
-}
-QPushButton {
-    background-color: #2563eb;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 7px 14px;
-    font-weight: 500;
-    font-size: 13px;
-}
-QPushButton:hover {
-    background-color: #1d4ed8;
-}
-QPushButton:pressed {
-    background-color: #1e40af;
-}
-QPushButton:disabled {
-    background-color: #e5e7eb;
-    color: #9ca3af;
-}
-QPushButton#secondary {
-    background-color: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-}
-QPushButton#secondary:hover {
-    background-color: #e5e7eb;
-}
-QPushButton#danger {
-    background-color: #dc2626;
-}
-QPushButton#danger:hover {
-    background-color: #b91c1c;
-}
-QPushButton#success {
-    background-color: #16a34a;
-}
-QPushButton#success:hover {
-    background-color: #15803d;
-}
-QPushButton#panelBtn {
-    background-color: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-size: 12px;
-}
-QPushButton#panelBtn:hover {
-    background-color: #e5e7eb;
-}
-QPushButton#panelBtn:checked {
-    background-color: #2563eb;
-    color: white;
-    border-color: #2563eb;
-}
-QDockWidget {
-    titlebar-close-icon: none;
-    font-weight: 600;
-    font-size: 13px;
-}
-QDockWidget::title {
-    background: #f3f4f6;
-    padding: 6px 10px;
-    border-bottom: 1px solid #e5e7eb;
-}
-QLineEdit {
-    background-color: #ffffff;
-    color: #111827;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 13px;
-}
-QLineEdit:focus {
-    border: 1px solid #2563eb;
-}
-QTreeView, QTableView {
-    background-color: #ffffff;
-    color: #111827;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
-    alternate-background-color: #f9fafb;
-    font-size: 13px;
-}
-QTreeView::item:selected, QTableView::item:selected {
-    background-color: #dbeafe;
-    color: #1e40af;
-}
-QTreeView::item:hover, QTableView::item:hover {
-    background-color: #eff6ff;
-}
-QHeaderView::section {
-    background-color: #f9fafb;
-    color: #374151;
-    padding: 6px;
-    border: 1px solid #e5e7eb;
-    font-weight: 600;
-    font-size: 12px;
-}
-QSlider::groove:horizontal {
-    background: #e5e7eb;
-    height: 6px;
-    border-radius: 3px;
-}
-QSlider::handle:horizontal {
-    background: #2563eb;
-    width: 16px;
-    height: 16px;
-    border-radius: 8px;
-    margin: -5px 0;
-}
-QLabel {
-    color: #374151;
-    font-size: 13px;
-}
-QStatusBar {
-    background-color: #ffffff;
-    color: #6b7280;
-    border-top: 1px solid #e5e7eb;
-    font-size: 12px;
-}
-QTabWidget::pane {
-    border: none;
-    background-color: transparent;
-}
-QTabBar::tab {
-    background-color: #f3f4f6;
-    color: #6b7280;
-    padding: 8px 16px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    margin-right: 4px;
-    font-size: 13px;
-}
-QTabBar::tab:selected {
-    background-color: #2563eb;
-    color: white;
-    font-weight: 500;
-}
-QTabBar::tab:hover:!selected {
-    background-color: #e5e7eb;
-}
-QCheckBox {
-    color: #374151;
-    font-size: 13px;
-}
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
-    border: 1px solid #d1d5db;
-    background-color: #ffffff;
-}
-QCheckBox::indicator:checked {
-    background-color: #2563eb;
-    border: 1px solid #2563eb;
-}
-QSpinBox {
-    background-color: #ffffff;
-    color: #111827;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 4px;
-    font-size: 13px;
-}
-QProgressBar {
-    border: none;
-    border-radius: 4px;
-    background-color: #e5e7eb;
-    text-align: center;
-    font-size: 11px;
-    color: #374151;
-}
-QProgressBar::chunk {
-    background-color: #2563eb;
-    border-radius: 4px;
-}
-QToolBar {
-    background-color: #ffffff;
-    border-bottom: 1px solid #e5e7eb;
-    padding: 4px;
-    spacing: 6px;
-}
-QSplitter::handle {
-    background-color: #e5e7eb;
-}
-QSplitter::handle:horizontal {
-    width: 2px;
-}
-QMessageBox {
-    background-color: #ffffff;
-}
-"""
-
 # ------------------------------------------------------------------------------
 # 自定义信号类（用于跨线程更新 UI）
 # ------------------------------------------------------------------------------
@@ -567,10 +359,10 @@ class StudyTreeModel(QAbstractItemModel):
 
 
 # ------------------------------------------------------------------------------
-# PACS 查询结果模型
+# 主机查询结果模型
 # ------------------------------------------------------------------------------
 class PacsResultModel(QStandardItemModel):
-    """用于右侧 Tab1 PACS 查询结果的表格模型"""
+    """用于右侧 Tab1 主机查询结果的表格模型"""
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
@@ -597,6 +389,495 @@ class PacsResultModel(QStandardItemModel):
         }
 
 
+class PacsQueryDialog(QDialog):
+    """主机查询弹窗"""
+
+    request_find = Signal(dict)  # 发出查询请求
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("查询主机")
+        self.setMinimumSize(800, 500)
+        self.selected_data = None
+
+        layout = QVBoxLayout(self)
+
+        # 搜索条件行
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("患者姓名:"))
+        self.edit_find_name = QLineEdit()
+        self.edit_find_name.setPlaceholderText("支持模糊查询")
+        search_layout.addWidget(self.edit_find_name)
+
+        search_layout.addWidget(QLabel("患者ID:"))
+        self.edit_find_id = QLineEdit()
+        self.edit_find_id.setPlaceholderText("Patient ID")
+        search_layout.addWidget(self.edit_find_id)
+
+        search_layout.addWidget(QLabel("检查号:"))
+        self.edit_find_acc = QLineEdit()
+        self.edit_find_acc.setPlaceholderText("Accession Number")
+        search_layout.addWidget(self.edit_find_acc)
+
+        search_layout.addWidget(QLabel("日期:"))
+        self.combo_date_filter = QComboBox()
+        self.combo_date_filter.addItems(["今天", "最近3天", "最近7天", "最近30天", "全部"])
+        self.combo_date_filter.setCurrentIndex(0)
+        search_layout.addWidget(self.combo_date_filter)
+
+        self.btn_find = QPushButton("查询")
+        self.btn_find.clicked.connect(self._on_find)
+        search_layout.addWidget(self.btn_find)
+        layout.addLayout(search_layout)
+
+        # 查询结果表格
+        self.table_results = QTableView()
+        self.table_results.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_results.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table_results.setAlternatingRowColors(True)
+        self.result_model = PacsResultModel(self)
+        self.table_results.setModel(self.result_model)
+        self.table_results.horizontalHeader().setStretchLastSection(True)
+        self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table_results)
+
+        # 选中提示
+        self.lbl_selected = QLabel("未选择目标患者")
+        self.lbl_selected.setStyleSheet("color: blue;")
+        layout.addWidget(self.lbl_selected)
+
+        self.table_results.selectionModel().currentRowChanged.connect(self._on_selection_changed)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_ok = QPushButton("确定")
+        self.btn_ok.setEnabled(False)
+        self.btn_ok.clicked.connect(self.accept)
+        btn_layout.addWidget(self.btn_ok)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _on_find(self):
+        """点击查询按钮"""
+        date_map = {
+            "今天": "TODAY",
+            "最近3天": "LAST3DAYS",
+            "最近7天": "LAST7DAYS",
+            "最近30天": "LAST30DAYS",
+            "全部": "",
+        }
+        query = {
+            "patient_name": self.edit_find_name.text().strip(),
+            "patient_id": self.edit_find_id.text().strip(),
+            "accession_number": self.edit_find_acc.text().strip(),
+            "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
+        }
+        self.result_model.clear()
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        self.lbl_selected.setText("未选择目标患者")
+        self.btn_ok.setEnabled(False)
+        self.selected_data = None
+        self.request_find.emit(query)
+
+    def _on_selection_changed(self, current: QModelIndex, previous: QModelIndex):
+        """表格选中行变化"""
+        if current.isValid():
+            data = self.result_model.get_selected_data(current.row())
+            self.lbl_selected.setText(
+                f"已选择: {data['patient_name']} | ID: {data['patient_id']} | Acc: {data['accession_number']}"
+            )
+            self.selected_data = data
+            self.btn_ok.setEnabled(True)
+        else:
+            self.lbl_selected.setText("未选择目标患者")
+            self.btn_ok.setEnabled(False)
+            self.selected_data = None
+
+    def on_results_ready(self, results: list):
+        """接收查询结果"""
+        for r in results:
+            self.result_model.add_result(r)
+
+
+class DsaNodeEditDialog(QDialog):
+    """DSA 节点编辑弹窗（添加/修改）"""
+
+    def __init__(self, node: Optional[dict] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("编辑 DSA 节点" if node else "添加 DSA 节点")
+        self.setMinimumWidth(360)
+        self._node = node or {}
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        f = QFormLayout()
+        f.setLabelAlignment(Qt.AlignRight)
+        f.setSpacing(8)
+
+        self.edit_name = QLineEdit()
+        self.edit_name.setPlaceholderText("例如: DSA-1")
+        f.addRow("节点名称:", self.edit_name)
+
+        self.edit_ae_title = QLineEdit()
+        self.edit_ae_title.setPlaceholderText("例如: DSA")
+        f.addRow("AE Title:", self.edit_ae_title)
+
+        self.edit_host = QLineEdit()
+        self.edit_host.setPlaceholderText("例如: 192.168.1.100")
+        f.addRow("主机 IP:", self.edit_host)
+
+        self.spin_port = QSpinBox()
+        self.spin_port.setRange(1, 65535)
+        self.spin_port.setValue(11112)
+        self.spin_port.installEventFilter(self)
+        self.spin_port.setFocusPolicy(Qt.StrongFocus)
+        f.addRow("端口:", self.spin_port)
+
+        layout.addLayout(f)
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_ok = QPushButton("确定")
+        self.btn_ok.setObjectName("success")
+        self.btn_ok.clicked.connect(self._on_ok)
+        btn_layout.addWidget(self.btn_ok)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+        layout.addLayout(btn_layout)
+
+        # 填充已有值
+        if node:
+            self.edit_name.setText(node.get("name", ""))
+            self.edit_ae_title.setText(node.get("ae_title", ""))
+            self.edit_host.setText(node.get("host", ""))
+            self.spin_port.setValue(node.get("port", 11112))
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Wheel and obj is self.spin_port:
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _on_ok(self):
+        name = self.edit_name.text().strip()
+        ae = self.edit_ae_title.text().strip()
+        host = self.edit_host.text().strip()
+        if not name:
+            QMessageBox.warning(self, "提示", "节点名称不能为空")
+            return
+        if not ae:
+            QMessageBox.warning(self, "提示", "AE Title 不能为空")
+            return
+        if not host:
+            QMessageBox.warning(self, "提示", "主机 IP 不能为空")
+            return
+        self._node = {
+            "name": name,
+            "ae_title": ae,
+            "host": host,
+            "port": self.spin_port.value(),
+        }
+        self.accept()
+
+    def get_node(self) -> dict:
+        return self._node
+
+
+class DsaQueryDialog(QDialog):
+    """DSA 查询弹窗（支持多节点选择）"""
+
+    request_find = Signal(dict, int)     # (查询参数, dsa_index)
+    request_move = Signal(str, str, int)  # (study_uid, dest_ae, dsa_index)
+
+    def __init__(self, dsa_nodes: List[dict], scp_ae_title: str = "MIX_SCP", parent=None):
+        super().__init__(parent)
+        self.dsa_nodes = dsa_nodes or []
+        self.scp_ae_title = scp_ae_title
+        self.setWindowTitle("查询 DSA")
+        self.setMinimumSize(800, 500)
+
+        layout = QVBoxLayout(self)
+
+        # 顶部：DSA 节点选择 + 日期筛选
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(QLabel("目标 DSA:"))
+        self.combo_dsa = QComboBox()
+        self.combo_dsa.setMinimumWidth(200)
+        for idx, node in enumerate(self.dsa_nodes):
+            display = f"{node.get('name', '未命名')} ({node.get('ae_title', '')}@{node.get('host', '')}:{node.get('port', '')})"
+            self.combo_dsa.addItem(display, idx)
+        if not self.dsa_nodes:
+            self.combo_dsa.addItem("未配置 DSA 节点", -1)
+            self.combo_dsa.setEnabled(False)
+        top_layout.addWidget(self.combo_dsa)
+
+        top_layout.addWidget(QLabel("日期:"))
+        self.combo_date_filter = QComboBox()
+        self.combo_date_filter.addItems(["今天", "最近3天", "最近7天", "最近30天", "全部"])
+        self.combo_date_filter.setCurrentIndex(0)
+        top_layout.addWidget(self.combo_date_filter)
+        top_layout.addStretch()
+
+        self.btn_find = QPushButton("查询 DSA")
+        self.btn_find.clicked.connect(self._on_find)
+        top_layout.addWidget(self.btn_find)
+        layout.addLayout(top_layout)
+
+        # 结果表格
+        self.result_table = QTableView()
+        self.result_model = QStandardItemModel()
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查日期", "检查UID"])
+        self.result_table.setModel(self.result_model)
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.result_table.horizontalHeader().setStretchLastSection(True)
+        self.result_table.verticalHeader().setVisible(False)
+        self.result_table.setAlternatingRowColors(True)
+        layout.addWidget(self.result_table)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(self.lbl_status)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_move = QPushButton("拉取选中检查")
+        self.btn_move.setEnabled(False)
+        self.btn_move.clicked.connect(self._on_move)
+        btn_layout.addWidget(self.btn_move)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+
+        self.result_table.clicked.connect(self._on_result_selected)
+        self._selected_study_uid = ""
+
+    def _on_find(self):
+        """查询 DSA"""
+        dsa_index = self.combo_dsa.currentData()
+        if dsa_index is None or dsa_index < 0:
+            QMessageBox.warning(self, "提示", "请先配置并选择一个 DSA 节点")
+            return
+        self.result_model.removeRows(0, self.result_model.rowCount())
+        self.lbl_status.setText("正在查询 DSA 工作站...")
+        self.btn_find.setEnabled(False)
+        date_map = {
+            "今天": "TODAY",
+            "最近3天": "LAST3DAYS",
+            "最近7天": "LAST7DAYS",
+            "最近30天": "LAST30DAYS",
+            "全部": "",
+        }
+        query = {
+            "patient_name": "",
+            "patient_id": "",
+            "accession_number": "",
+            "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
+        }
+        self.request_find.emit(query, dsa_index)
+
+    def on_find_results(self, results: list):
+        """接收查询结果"""
+        self.btn_find.setEnabled(True)
+        self.result_model.removeRows(0, self.result_model.rowCount())
+        if not results:
+            self.lbl_status.setText("未找到匹配的检查")
+            return
+        for result in results:
+            row = [
+                QStandardItem(result.get("patient_name", "")),
+                QStandardItem(result.get("patient_id", "")),
+                QStandardItem(result.get("accession_number", "")),
+                QStandardItem(result.get("study_date", "")),
+                QStandardItem(result.get("study_instance_uid", "")),
+            ]
+            for item in row:
+                item.setEditable(False)
+            self.result_model.appendRow(row)
+        self.lbl_status.setText(f"找到 {len(results)} 个检查")
+
+    def _on_result_selected(self, index: QModelIndex):
+        """选中行"""
+        row = index.row()
+        if row >= 0:
+            self._selected_study_uid = self.result_model.item(row, 4).text()
+            self.btn_move.setEnabled(True)
+
+    def _on_move(self):
+        """拉取选中检查"""
+        if not self._selected_study_uid:
+            QMessageBox.warning(self, "提示", "请先在表格中选择一个检查")
+            return
+        dsa_index = self.combo_dsa.currentData()
+        if dsa_index is None or dsa_index < 0:
+            QMessageBox.warning(self, "提示", "请先选择一个 DSA 节点")
+            return
+        self.lbl_status.setText(f"正在从 DSA 拉取检查 {self._selected_study_uid}...")
+        self.btn_move.setEnabled(False)
+        self.request_move.emit(self._selected_study_uid, self.scp_ae_title, dsa_index)
+
+    def on_move_finished(self, success: int, total: int):
+        """拉取完成"""
+        self.btn_move.setEnabled(True)
+        self.lbl_status.setText(f"DSA 拉取完成: 成功 {success}/{total}")
+        QMessageBox.information(self, "DSA 拉取完成", f"从 DSA 工作站拉取完成\n成功: {success} / 总计: {total}")
+
+
+class HelpDialog(QDialog):
+    """帮助文档弹窗"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("使用帮助")
+        self.setMinimumSize(800, 600)
+        self.resize(900, 700)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # 标题
+        title = QLabel("📖 DICOM MIX Tools 使用帮助")
+        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #111827; padding: 8px 0;")
+        layout.addWidget(title)
+
+        # 帮助内容浏览器
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+        """)
+        browser.setHtml(self._build_help_html())
+        layout.addWidget(browser)
+
+        # 关闭按钮
+        btn_close = QPushButton("关闭")
+        btn_close.setObjectName("secondary")
+        btn_close.clicked.connect(self.accept)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+    def _build_help_html(self) -> str:
+        return """\
+        <html>
+        <body style="font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #374151;">
+        <h2 style="color: #111827;">DSA 图像路由与编辑工具</h2>
+        <p>用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。</p>
+
+        <h3 style="color: #0078d4;">功能特性</h3>
+        <ul>
+        <li><b>图像接收</b>：内置 DICOM SCP 服务端，可接收 DSA 设备推送的图像</li>
+        <li><b>本地导入</b>：批量导入本地 DICOM 文件夹</li>
+        <li><b>DSA 查看器</b>：多帧图像浏览、实时减影、窗宽窗位调节、循环播放</li>
+        <li><b>患者信息编辑</b>：修改患者姓名、ID、性别、年龄、出生日期、检查号等</li>
+        <li><b>UID 重置</b>：自动重新生成 Study/Series/SOP Instance UID</li>
+        <li><b>主机查询与发送</b>：C-FIND 查询、C-STORE 发送</li>
+        <li><b>DSA 双向连接</b>：C-FIND 查询 DSA 工作站、C-MOVE 主动拉取图像，支持配置多个 DSA 节点</li>
+        </ul>
+
+        <h3 style="color: #0078d4;">详细使用说明</h3>
+
+        <h4>1. 接收 DSA 图像（SCP 模式）</h4>
+        <ol>
+        <li>切换到 <b>网络配置</b> Tab，查看本机 IP 地址</li>
+        <li>确认 SCP AE Title 和端口（默认 <code>MIX_SCP</code>，端口 <code>11112</code>）</li>
+        <li>在 DSA 设备或工作站上配置 DICOM 发送目标：AE Title=<code>MIX_SCP</code>，IP=本机 IP，端口=<code>11112</code></li>
+        <li>点击工具栏的 <b>启动 SCP</b> 按钮</li>
+        <li>从 DSA 设备推送图像，图像将自动保存到 <code>temp_dicom/</code> 目录</li>
+        <li>点击 <b>刷新</b> 按钮，左侧树形控件将显示已接收的检查</li>
+        </ol>
+
+        <h4>2. 从 DSA 工作站主动拉取</h4>
+        <ol>
+        <li>切换到 <b>网络配置</b> Tab</li>
+        <li>在 <b>DSA 主机/工作站</b> 区域点击 <b>添加</b> 按钮，填写 DSA 节点名称、AE Title、IP 和端口</li>
+        <li>支持添加多个 DSA 节点，可分别编辑或删除</li>
+        <li>点击 <b>保存配置</b></li>
+        <li>点击工具栏 <b>数据载入</b> → <b>查询 DSA</b>，在弹窗中选择目标 DSA 节点</li>
+        <li>选择目标检查，点击 <b>拉取选中检查</b></li>
+        <li>DSA 工作站将图像推送到本机 SCP，完成后自动刷新左侧树</li>
+        </ol>
+
+        <h4>3. 本地文件导入</h4>
+        <ol>
+        <li>点击工具栏的 <b>数据载入</b> → <b>载入本地文件夹</b></li>
+        <li>选择包含 DICOM 文件的文件夹</li>
+        <li>程序自动扫描、验证并复制有效 DICOM 文件到工作目录</li>
+        <li>完成后自动刷新左侧树形控件</li>
+        </ol>
+
+        <h4>4. 图像查看</h4>
+        <ul>
+        <li><b>左侧树形控件</b>显示三级结构：检查 → 序列 → 影像</li>
+        <li>点击节点即可加载对应图像到中间预览区</li>
+        <li><b>鼠标滚轮</b>：缩放图像</li>
+        <li><b>鼠标中键拖拽</b>：调节窗宽窗位（水平=窗宽，垂直=窗位）</li>
+        <li><b>播放按钮</b>：自动循环播放当前序列</li>
+        <li><b>◀ / ▶ 按钮</b>：手动逐帧前进/后退</li>
+        </ul>
+
+        <h4>5. DSA 减影</h4>
+        <ol>
+        <li>加载多帧 DSA 序列</li>
+        <li>右键图像 → <b>将当前帧设为蒙片 (Mask)</b></li>
+        <li>勾选右侧面板的 <b>开启实时减影</b></li>
+        <li>图像将显示当前帧与蒙版帧的差值（血管显影）</li>
+        <li>右侧面板可调节减影增益</li>
+        </ol>
+
+        <h4>6. 患者信息编辑与发送</h4>
+        <ol>
+        <li>在左侧树中勾选要处理的序列（勾选框支持多选）</li>
+        <li>点击工具栏的 <b>修改病人信息</b> 按钮，打开右侧面板</li>
+        <li>使用 <b>主机查询</b> 从远端主机搜索患者并自动填充，或直接在下方表单中手动输入</li>
+        <li>确认必填项：患者姓名、患者 ID、检查号</li>
+        <li>点击工具栏的 <b>拆分发送到主机</b>：覆写患者信息 + 重新生成 UID → C-STORE 发送</li>
+        <li>或点击 <b>导出到本地</b>：保存到指定文件夹</li>
+        </ol>
+
+        <h4>7. 网络配置说明</h4>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; border-color: #e5e7eb; font-size: 13px;">
+        <tr style="background-color: #f9fafb;"><th>配置项</th><th>默认值</th><th>说明</th></tr>
+        <tr><td>主机 AE Title</td><td><code>PACS</code></td><td>主机服务器的 AE Title</td></tr>
+        <tr><td>主机地址</td><td><code>127.0.0.1</code></td><td>主机服务器 IP 地址</td></tr>
+        <tr><td>主机端口</td><td><code>11112</code></td><td>主机服务器端口</td></tr>
+        <tr><td>SCU AE Title</td><td><code>MIX_SCU</code></td><td>本机作为 SCU 时的标识</td></tr>
+        <tr><td>SCP AE Title</td><td><code>MIX_SCP</code></td><td>本机作为 SCP 时的标识</td></tr>
+        <tr><td>SCP 端口</td><td><code>11112</code></td><td>本机 SCP 监听端口</td></tr>
+        <tr><td>DSA 节点</td><td colspan="2">支持配置多个 DSA 节点（名称、AE Title、IP、端口）</td></tr>
+        </table>
+
+        <h3 style="color: #0078d4;">快捷键</h3>
+        <ul>
+        <li><b>鼠标滚轮</b>：缩放图像</li>
+        <li><b>鼠标中键拖拽</b>：调节窗宽窗位</li>
+        <li><b>右键图像</b>：设置减影蒙版帧</li>
+        </ul>
+
+        <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">内部工具，仅供医疗影像工作站使用。</p>
+        </body>
+        </html>
+        """
+
+
 # ------------------------------------------------------------------------------
 # 主窗口
 # ------------------------------------------------------------------------------
@@ -619,8 +900,10 @@ class MainWindow(QMainWindow):
     request_process_and_store = Signal(list, dict)  # (选中序列, 目标患者信息)
     request_process_and_export = Signal(list, dict, str)  # (选中序列, 目标患者信息, 输出目录)
     network_config_changed = Signal(dict)  # 网络配置变更通知
-    request_dsa_find = Signal(dict)        # 请求 DSA C-FIND (参数字典)
-    request_dsa_move = Signal(str, str)    # 请求 DSA C-MOVE (study_uid, move_dest_ae)
+    request_dsa_find = Signal(dict, int)        # 请求 DSA C-FIND (参数字典, dsa_index)
+    request_dsa_move = Signal(str, str, int)    # 请求 DSA C-MOVE (study_uid, move_dest_ae, dsa_index)
+    show_pacs_query_requested = Signal()   # 请求显示主机查询弹窗
+    show_dsa_query_requested = Signal()    # 请求显示 DSA 查询弹窗
 
     def __init__(self):
         super().__init__()
@@ -659,12 +942,14 @@ class MainWindow(QMainWindow):
                 break
 
     def _init_ui(self):
-        self.setStyleSheet(MAIN_STYLE)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
+
+        # DSA 节点列表（在 _load_network_config 中从 QSettings 加载）
+        self._dsa_nodes: List[dict] = []
 
         # ---- 1. 顶部工具栏 ----
         self._init_toolbar()
@@ -695,23 +980,35 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # 本地载入按钮
-        self.btn_load_local = QPushButton("📁 载入本地文件夹")
-        self.btn_load_local.setObjectName("secondary")
-        self.btn_load_local.clicked.connect(self._on_load_local)
-        toolbar.addWidget(self.btn_load_local)
+        # 数据载入下拉菜单（整合本地载入、主机查询、DSA查询）
+        self.btn_data_load = QToolButton()
+        self.btn_data_load.setText("📥 数据载入 ▼")
+        self.btn_data_load.setObjectName("secondary")
+        self.btn_data_load.setPopupMode(QToolButton.InstantPopup)
+        self.menu_data_load = QMenu(self.btn_data_load)
+        self.act_load_local = self.menu_data_load.addAction("📁 载入本地文件夹")
+        self.act_load_local.triggered.connect(self._on_load_local)
+        self.menu_data_load.addSeparator()
+        self.act_query_pacs = self.menu_data_load.addAction("🔍 查询主机")
+        self.act_query_pacs.triggered.connect(self._on_show_pacs_query)
+        self.act_query_dsa = self.menu_data_load.addAction("🔍 查询 DSA")
+        self.act_query_dsa.triggered.connect(self._on_show_dsa_query)
+        self.btn_data_load.setMenu(self.menu_data_load)
+        toolbar.addWidget(self.btn_data_load)
 
-        # 刷新按钮
-        self.btn_refresh_tree = QPushButton("🔄 刷新")
-        self.btn_refresh_tree.setObjectName("secondary")
-        self.btn_refresh_tree.clicked.connect(self._on_refresh_tree)
-        toolbar.addWidget(self.btn_refresh_tree)
+        toolbar.addSeparator()
 
-        # 清空按钮（仅清空列表和 Viewer，不删文件）
-        self.btn_clear_tree = QPushButton("🗑 清空列表")
-        self.btn_clear_tree.setObjectName("secondary")
-        self.btn_clear_tree.clicked.connect(self._on_clear_tree)
-        toolbar.addWidget(self.btn_clear_tree)
+        # 拆分发送到主机（从底部栏移上来）
+        self.btn_send_pacs_toolbar = QPushButton("📤 拆分发送到主机")
+        self.btn_send_pacs_toolbar.setObjectName("success")
+        self.btn_send_pacs_toolbar.clicked.connect(self._on_process_and_send)
+        toolbar.addWidget(self.btn_send_pacs_toolbar)
+
+        # 导出到本地（从底部栏移上来）
+        self.btn_export_local_toolbar = QPushButton("💾 导出到本地")
+        self.btn_export_local_toolbar.setObjectName("secondary")
+        self.btn_export_local_toolbar.clicked.connect(self._on_process_and_export)
+        toolbar.addWidget(self.btn_export_local_toolbar)
 
         # 清除缓存按钮（删除 temp_dicom 文件夹中的所有数据）
         self.btn_clear_cache = QPushButton("⚠ 清除缓存")
@@ -740,24 +1037,36 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
 
-        # 右侧面板切换按钮
-        self.btn_panel_pacs = QPushButton("PACS 查询")
-        self.btn_panel_pacs.setCheckable(True)
-        self.btn_panel_pacs.setObjectName("panelBtn")
-        self.btn_panel_pacs.clicked.connect(lambda: self._toggle_right_panel(0))
-        toolbar.addWidget(self.btn_panel_pacs)
+        # 右侧面板切换按钮（核心功能，更醒目）
+        self.btn_panel_patient = QPushButton("修改病人信息")
+        self.btn_panel_patient.setCheckable(True)
+        self.btn_panel_patient.setObjectName("success")
+        self.btn_panel_patient.setMinimumHeight(32)
+        self.btn_panel_patient.setMinimumWidth(100)
+        self.btn_panel_patient.setStyleSheet("font-weight: 600; font-size: 13px;")
+        self.btn_panel_patient.clicked.connect(lambda: self._toggle_right_panel(0))
+        toolbar.addWidget(self.btn_panel_patient)
 
-        self.btn_panel_manual = QPushButton("手动输入")
-        self.btn_panel_manual.setCheckable(True)
-        self.btn_panel_manual.setObjectName("panelBtn")
-        self.btn_panel_manual.clicked.connect(lambda: self._toggle_right_panel(1))
-        toolbar.addWidget(self.btn_panel_manual)
-
-        self.btn_panel_network = QPushButton("网络配置")
+        self.btn_panel_network = QPushButton()
+        self.btn_panel_network.setIcon(FluentIcon.SETTING.icon())
         self.btn_panel_network.setCheckable(True)
         self.btn_panel_network.setObjectName("panelBtn")
-        self.btn_panel_network.clicked.connect(lambda: self._toggle_right_panel(2))
+        self.btn_panel_network.setToolTip("网络配置")
+        self.btn_panel_network.setFixedSize(36, 36)
+        self.btn_panel_network.setIconSize(QSize(20, 20))
+        self.btn_panel_network.clicked.connect(lambda: self._toggle_right_panel(1))
         toolbar.addWidget(self.btn_panel_network)
+
+        toolbar.addSeparator()
+
+        # 帮助按钮
+        self.btn_help = QPushButton()
+        self.btn_help.setIcon(FluentIcon.QUESTION.icon())
+        self.btn_help.setToolTip("使用帮助")
+        self.btn_help.setFixedSize(36, 36)
+        self.btn_help.setIconSize(QSize(20, 20))
+        self.btn_help.clicked.connect(self._on_show_help)
+        toolbar.addWidget(self.btn_help)
 
     def _init_central_splitter(self):
         """中部主体：左右分割面板（左: 源数据树, 中: DSA 预览），右侧面板通过工具栏按钮弹出"""
@@ -781,7 +1090,7 @@ class MainWindow(QMainWindow):
 
     def _create_left_panel(self) -> QWidget:
         """构建左侧源数据展示面板"""
-        group = QGroupBox("源数据 (来自 SCP 或本地载入)")
+        group = QGroupBox("源数据")
         layout = QVBoxLayout(group)
 
         # 树形视图
@@ -808,15 +1117,16 @@ class MainWindow(QMainWindow):
         # 连接树节点选择变化信号，联动中间 DSA 查看器
         self.tree_view.selectionModel().currentChanged.connect(self._on_tree_selection_changed)
 
-        # 左侧底部小工具栏：刷新、清空
+        # 左侧底部小工具栏：刷新 + 清空
         hbox = QHBoxLayout()
+
         self.btn_refresh_tree = QPushButton("刷新")
         self.btn_refresh_tree.clicked.connect(self._on_refresh_tree)
         hbox.addWidget(self.btn_refresh_tree)
 
-        self.btn_clear_tree = QPushButton("清空列表")
-        self.btn_clear_tree.clicked.connect(self._on_clear_tree)
-        hbox.addWidget(self.btn_clear_tree)
+        self.btn_clear_tree_left = QPushButton("清空")
+        self.btn_clear_tree_left.clicked.connect(self._on_clear_tree)
+        hbox.addWidget(self.btn_clear_tree_left)
         hbox.addStretch()
         layout.addLayout(hbox)
 
@@ -843,15 +1153,11 @@ class MainWindow(QMainWindow):
 
         self.tab_widget = QTabWidget()
 
-        # --- Tab 1: PACS 查询 ---
-        self.tab_pacs = self._create_pacs_tab()
-        self.tab_widget.addTab(self.tab_pacs, "PACS 查询")
+        # --- Tab 0: 修改病人信息（主机查询 + 手动输入） ---
+        self.tab_patient_info = self._create_patient_info_tab()
+        self.tab_widget.addTab(self.tab_patient_info, "修改病人信息")
 
-        # --- Tab 2: 手动输入 ---
-        self.tab_manual = self._create_manual_tab()
-        self.tab_widget.addTab(self.tab_manual, "手动输入")
-
-        # --- Tab 3: 网络配置 ---
+        # --- Tab 1: 网络配置 ---
         self.tab_network = self._create_network_config_tab()
         self.tab_widget.addTab(self.tab_network, "网络配置")
 
@@ -903,12 +1209,11 @@ class MainWindow(QMainWindow):
         """根据右侧面板可见性和当前 Tab 更新工具栏按钮选中状态"""
         visible = self.right_dock.isVisible()
         current_tab = self.tab_widget.currentIndex() if visible else -1
-        self.btn_panel_pacs.setChecked(visible and current_tab == 0)
-        self.btn_panel_manual.setChecked(visible and current_tab == 1)
-        self.btn_panel_network.setChecked(visible and current_tab == 2)
+        self.btn_panel_patient.setChecked(visible and current_tab == 0)
+        self.btn_panel_network.setChecked(visible and current_tab == 1)
 
     def _create_pacs_tab(self) -> QWidget:
-        """PACS 查询 Tab：搜索框 + 表格结果"""
+        """主机查询 Tab：搜索框 + 表格结果"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -929,7 +1234,7 @@ class MainWindow(QMainWindow):
         self.edit_find_acc.setPlaceholderText("Accession Number")
         search_layout.addWidget(self.edit_find_acc)
 
-        self.btn_find = QPushButton("查询 PACS")
+        self.btn_find = QPushButton("查询主机")
         self.btn_find.clicked.connect(self._on_pacs_find)
         search_layout.addWidget(self.btn_find)
         layout.addLayout(search_layout)
@@ -955,8 +1260,139 @@ class MainWindow(QMainWindow):
 
         return widget
 
+    def _create_patient_info_tab(self) -> QWidget:
+        """修改病人信息 Tab：整合主机查询 + 手动输入表单"""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        # --- 主机查询区域 ---
+        g_pacs = QGroupBox("从主机查询填充")
+        pacs_layout = QVBoxLayout(g_pacs)
+
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("姓名:"))
+        self.edit_find_name = QLineEdit()
+        self.edit_find_name.setPlaceholderText("支持模糊查询")
+        search_layout.addWidget(self.edit_find_name)
+
+        search_layout.addWidget(QLabel("ID:"))
+        self.edit_find_id = QLineEdit()
+        self.edit_find_id.setPlaceholderText("Patient ID")
+        search_layout.addWidget(self.edit_find_id)
+
+        search_layout.addWidget(QLabel("检查号:"))
+        self.edit_find_acc = QLineEdit()
+        self.edit_find_acc.setPlaceholderText("Accession Number")
+        search_layout.addWidget(self.edit_find_acc)
+
+        self.btn_find = QPushButton("查询")
+        self.btn_find.clicked.connect(self._on_pacs_find)
+        search_layout.addWidget(self.btn_find)
+        pacs_layout.addLayout(search_layout)
+
+        self.table_results = QTableView()
+        self.table_results.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_results.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table_results.setAlternatingRowColors(True)
+        self.pacs_result_model = PacsResultModel(self)
+        self.table_results.setModel(self.pacs_result_model)
+        self.table_results.horizontalHeader().setStretchLastSection(True)
+        self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        pacs_layout.addWidget(self.table_results)
+
+        self.lbl_pacs_selected = QLabel("未选择目标患者")
+        self.lbl_pacs_selected.setStyleSheet("color: blue;")
+        pacs_layout.addWidget(self.lbl_pacs_selected)
+
+        self.table_results.selectionModel().currentRowChanged.connect(self._on_pacs_selection_changed)
+
+        layout.addWidget(g_pacs)
+
+        # --- 手动输入表单 ---
+        g_manual = QGroupBox("手动修改 / 确认信息")
+        manual_layout = QVBoxLayout(g_manual)
+
+        f1 = QFormLayout()
+        f1.setLabelAlignment(Qt.AlignRight)
+        f1.setSpacing(6)
+
+        self.edit_manual_name = QLineEdit()
+        self.edit_manual_name.setPlaceholderText("患者姓名")
+        self.edit_manual_name.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("患者姓名 *:", self.edit_manual_name)
+
+        self.edit_manual_id = QLineEdit()
+        self.edit_manual_id.setPlaceholderText("患者ID")
+        self.edit_manual_id.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("患者 ID *:", self.edit_manual_id)
+
+        self.edit_manual_acc = QLineEdit()
+        self.edit_manual_acc.setPlaceholderText("检查号")
+        self.edit_manual_acc.textChanged.connect(self._on_manual_input_changed)
+        f1.addRow("检查号 *:", self.edit_manual_acc)
+
+        manual_layout.addLayout(f1)
+
+        f2 = QFormLayout()
+        f2.setLabelAlignment(Qt.AlignRight)
+        f2.setSpacing(6)
+
+        sex_age = QHBoxLayout()
+        self.edit_manual_sex = QLineEdit()
+        self.edit_manual_sex.setPlaceholderText("M / F / O")
+        self.edit_manual_sex.setMaximumWidth(80)
+        sex_age.addWidget(self.edit_manual_sex)
+        sex_age.addWidget(QLabel("年龄:"))
+        self.edit_manual_age = QLineEdit()
+        self.edit_manual_age.setPlaceholderText("45Y")
+        self.edit_manual_age.setMaximumWidth(80)
+        sex_age.addWidget(self.edit_manual_age)
+        sex_age.addStretch()
+        f2.addRow("性别 / 年龄:", sex_age)
+
+        self.edit_manual_birth = QLineEdit()
+        self.edit_manual_birth.setPlaceholderText("YYYYMMDD，如 19800101")
+        f2.addRow("出生日期:", self.edit_manual_birth)
+
+        self.edit_manual_inpatient_id = QLineEdit()
+        self.edit_manual_inpatient_id.setPlaceholderText("住院号")
+        f2.addRow("住院号:", self.edit_manual_inpatient_id)
+
+        manual_layout.addLayout(f2)
+
+        f3 = QFormLayout()
+        f3.setLabelAlignment(Qt.AlignRight)
+        f3.setSpacing(6)
+
+        self.edit_manual_series_number = QLineEdit()
+        self.edit_manual_series_number.setPlaceholderText("序列号 / 影像号")
+        f3.addRow("影像号:", self.edit_manual_series_number)
+
+        self.edit_manual_study_uid = QLineEdit()
+        self.edit_manual_study_uid.setPlaceholderText("留空将自动生成")
+        f3.addRow("Study UID:", self.edit_manual_study_uid)
+
+        manual_layout.addLayout(f3)
+
+        self.lbl_manual_hint = QLabel("")
+        self.lbl_manual_hint.setStyleSheet("color: red;")
+        manual_layout.addWidget(self.lbl_manual_hint)
+
+        layout.addWidget(g_manual)
+        layout.addStretch()
+
+        scroll.setWidget(widget)
+        return scroll
+
     def _create_manual_tab(self) -> QWidget:
-        """手动输入 Tab：患者信息分组表单"""
+        """手动输入 Tab：患者信息分组表单（保留供内部复用）"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(10)
@@ -1055,7 +1491,7 @@ class MainWindow(QMainWindow):
         return ips
 
     def _create_network_config_tab(self) -> QWidget:
-        """网络配置 Tab：本机信息、PACS、DSA、SCU/SCP 参数配置"""
+        """网络配置 Tab：本机信息、主机、DSA、SCU/SCP 参数配置"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(10)
@@ -1076,85 +1512,63 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(g0)
 
-        # --- PACS 节点配置 ---
-        g1 = QGroupBox("PACS 节点")
+        # --- 主机节点配置 ---
+        g1 = QGroupBox("主机节点")
         f1 = QFormLayout(g1)
         f1.setLabelAlignment(Qt.AlignRight)
         f1.setSpacing(8)
 
         self.edit_pacs_ae_title = QLineEdit()
-        self.edit_pacs_ae_title.setPlaceholderText("例如: PACS")
-        f1.addRow("PACS AE Title:", self.edit_pacs_ae_title)
+        self.edit_pacs_ae_title.setPlaceholderText("例如: HOST")
+        f1.addRow("主机 AE Title:", self.edit_pacs_ae_title)
 
         self.edit_pacs_host = QLineEdit()
         self.edit_pacs_host.setPlaceholderText("例如: 127.0.0.1")
-        f1.addRow("PACS 主机:", self.edit_pacs_host)
+        f1.addRow("主机地址:", self.edit_pacs_host)
 
         self.spin_pacs_port = QSpinBox()
         self.spin_pacs_port.setRange(1, 65535)
         self.spin_pacs_port.setValue(11112)
-        f1.addRow("PACS 端口:", self.spin_pacs_port)
+        f1.addRow("主机端口:", self.spin_pacs_port)
 
         layout.addWidget(g1)
 
-        # --- DSA 主机/工作站配置 ---
+        # --- DSA 主机/工作站配置（多节点） ---
         g_dsa = QGroupBox("DSA 主机/工作站")
-        f_dsa = QFormLayout(g_dsa)
-        f_dsa.setLabelAlignment(Qt.AlignRight)
-        f_dsa.setSpacing(8)
+        dsa_layout = QVBoxLayout(g_dsa)
+        dsa_layout.setSpacing(8)
 
-        self.edit_dsa_ae_title = QLineEdit()
-        self.edit_dsa_ae_title.setPlaceholderText("例如: DSA")
-        f_dsa.addRow("DSA AE Title:", self.edit_dsa_ae_title)
+        # DSA 节点表格
+        self.dsa_nodes_model = QStandardItemModel()
+        self.dsa_nodes_model.setHorizontalHeaderLabels(["名称", "AE Title", "IP 地址", "端口"])
+        self.dsa_nodes_table = QTableView()
+        self.dsa_nodes_table.setModel(self.dsa_nodes_model)
+        self.dsa_nodes_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.dsa_nodes_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.dsa_nodes_table.horizontalHeader().setStretchLastSection(True)
+        self.dsa_nodes_table.verticalHeader().setVisible(False)
+        self.dsa_nodes_table.setAlternatingRowColors(True)
+        self.dsa_nodes_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        dsa_layout.addWidget(self.dsa_nodes_table)
 
-        self.edit_dsa_host = QLineEdit()
-        self.edit_dsa_host.setPlaceholderText("例如: 192.168.1.100")
-        f_dsa.addRow("DSA 主机 IP:", self.edit_dsa_host)
-
-        self.spin_dsa_port = QSpinBox()
-        self.spin_dsa_port.setRange(1, 65535)
-        self.spin_dsa_port.setValue(11112)
-        f_dsa.addRow("DSA 端口:", self.spin_dsa_port)
-
-        # DSA 查询 + 拉取按钮
+        # 操作按钮
         dsa_btn_layout = QHBoxLayout()
-        self.btn_dsa_find = QPushButton("查询 DSA")
-        self.btn_dsa_find.clicked.connect(self._on_dsa_find)
-        dsa_btn_layout.addWidget(self.btn_dsa_find)
+        self.btn_dsa_add = QPushButton("添加")
+        self.btn_dsa_add.clicked.connect(self._on_dsa_add)
+        dsa_btn_layout.addWidget(self.btn_dsa_add)
 
-        self.btn_dsa_move = QPushButton("从 DSA 拉取")
-        self.btn_dsa_move.setObjectName("success")
-        self.btn_dsa_move.clicked.connect(self._on_dsa_move)
-        self.btn_dsa_move.setEnabled(False)
-        dsa_btn_layout.addWidget(self.btn_dsa_move)
+        self.btn_dsa_edit = QPushButton("编辑")
+        self.btn_dsa_edit.clicked.connect(self._on_dsa_edit)
+        dsa_btn_layout.addWidget(self.btn_dsa_edit)
+
+        self.btn_dsa_delete = QPushButton("删除")
+        self.btn_dsa_delete.setObjectName("danger")
+        self.btn_dsa_delete.clicked.connect(self._on_dsa_delete)
+        dsa_btn_layout.addWidget(self.btn_dsa_delete)
         dsa_btn_layout.addStretch()
-        f_dsa.addRow(dsa_btn_layout)
+        dsa_layout.addLayout(dsa_btn_layout)
 
         layout.addWidget(g_dsa)
-
-        # --- DSA 查询结果表格 ---
-        g_dsa_result = QGroupBox("DSA 查询结果")
-        dsa_result_layout = QVBoxLayout(g_dsa_result)
-
-        self.dsa_result_model = QStandardItemModel()
-        self.dsa_result_model.setHorizontalHeaderLabels(
-            ["患者姓名", "患者ID", "检查号", "检查日期", "检查UID"]
-        )
-        self.dsa_result_table = QTableView()
-        self.dsa_result_table.setModel(self.dsa_result_model)
-        self.dsa_result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.dsa_result_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.dsa_result_table.horizontalHeader().setStretchLastSection(True)
-        self.dsa_result_table.verticalHeader().setVisible(False)
-        self.dsa_result_table.setAlternatingRowColors(True)
-        self.dsa_result_table.clicked.connect(self._on_dsa_result_selected)
-        dsa_result_layout.addWidget(self.dsa_result_table)
-
-        self.lbl_dsa_status = QLabel("")
-        self.lbl_dsa_status.setStyleSheet("color: #666; font-size: 12px;")
-        dsa_result_layout.addWidget(self.lbl_dsa_status)
-
-        layout.addWidget(g_dsa_result)
 
         # --- 本地 SCU 配置 ---
         g2 = QGroupBox("本地 SCU (查询/发送)")
@@ -1205,17 +1619,32 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        # 禁用端口输入框的鼠标滚轮，防止误触
+        for spin in (self.spin_pacs_port, self.spin_scp_port):
+            spin.installEventFilter(self)
+            spin.setFocusPolicy(Qt.StrongFocus)
+
         # 加载已保存的配置（如果有）
         self._load_network_config()
         return widget
 
+    def eventFilter(self, obj, event):
+        """事件过滤器：禁用网络配置端口框的滚轮事件"""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Wheel:
+            if obj in (self.spin_pacs_port, self.spin_scp_port):
+                event.ignore()
+                return True
+        return super().eventFilter(obj, event)
+
     def _load_network_config(self):
         """从 QSettings 加载网络配置，若不存在则使用 config.py 默认值。"""
+        import json
         from config import (
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
-            DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
+            DEFAULT_DSA_NODES,
         )
         settings = QSettings("MedicalSoftware", "DICOMMIXTools")
 
@@ -1238,22 +1667,34 @@ class MainWindow(QMainWindow):
             int(settings.value("network/scp_port", DEFAULT_SCP_PORT))
         )
 
-        # DSA 配置
-        self.edit_dsa_ae_title.setText(
-            settings.value("network/dsa_ae_title", DEFAULT_DSA_AE_TITLE)
-        )
-        self.edit_dsa_host.setText(
-            settings.value("network/dsa_host", DEFAULT_DSA_HOST)
-        )
-        self.spin_dsa_port.setValue(
-            int(settings.value("network/dsa_port", DEFAULT_DSA_PORT))
-        )
+        # DSA 多节点配置
+        dsa_json = settings.value("network/dsa_nodes_json", "")
+        if dsa_json:
+            try:
+                self._dsa_nodes = json.loads(dsa_json)
+            except (json.JSONDecodeError, TypeError):
+                self._dsa_nodes = list(DEFAULT_DSA_NODES)
+        else:
+            # 兼容旧版单节点配置
+            old_ae = settings.value("network/dsa_ae_title", "")
+            if old_ae:
+                self._dsa_nodes = [{
+                    "name": "DSA-1",
+                    "ae_title": old_ae,
+                    "host": settings.value("network/dsa_host", "192.168.1.100"),
+                    "port": int(settings.value("network/dsa_port", 11112)),
+                }]
+            else:
+                self._dsa_nodes = list(DEFAULT_DSA_NODES)
+
+        self._refresh_dsa_table()
 
         # 更新 SCP 状态显示
         self._update_scp_status_label()
 
     def _on_save_network_config(self):
         """保存网络配置到 QSettings 并发射变更信号。"""
+        import json
         settings = QSettings("MedicalSoftware", "DICOMMIXTools")
         settings.setValue("network/pacs_ae_title", self.edit_pacs_ae_title.text().strip())
         settings.setValue("network/pacs_host", self.edit_pacs_host.text().strip())
@@ -1261,9 +1702,9 @@ class MainWindow(QMainWindow):
         settings.setValue("network/scu_ae_title", self.edit_scu_ae_title.text().strip())
         settings.setValue("network/scp_ae_title", self.edit_scp_ae_title.text().strip())
         settings.setValue("network/scp_port", self.spin_scp_port.value())
-        settings.setValue("network/dsa_ae_title", self.edit_dsa_ae_title.text().strip())
-        settings.setValue("network/dsa_host", self.edit_dsa_host.text().strip())
-        settings.setValue("network/dsa_port", self.spin_dsa_port.value())
+
+        # 保存 DSA 多节点列表为 JSON
+        settings.setValue("network/dsa_nodes_json", json.dumps(self._dsa_nodes))
 
         self.lbl_network_hint.setText("配置已保存（重启后生效或立即应用）")
         QTimer.singleShot(3000, lambda: self.lbl_network_hint.setText(""))
@@ -1277,7 +1718,7 @@ class MainWindow(QMainWindow):
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
-            DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
+            DEFAULT_DSA_NODES,
         )
         self.edit_pacs_ae_title.setText(DEFAULT_PACS_AE_TITLE)
         self.edit_pacs_host.setText(DEFAULT_PACS_HOST)
@@ -1285,9 +1726,8 @@ class MainWindow(QMainWindow):
         self.edit_scu_ae_title.setText(DEFAULT_LOCAL_SCU_AE_TITLE)
         self.edit_scp_ae_title.setText(DEFAULT_SCP_AE_TITLE)
         self.spin_scp_port.setValue(DEFAULT_SCP_PORT)
-        self.edit_dsa_ae_title.setText(DEFAULT_DSA_AE_TITLE)
-        self.edit_dsa_host.setText(DEFAULT_DSA_HOST)
-        self.spin_dsa_port.setValue(DEFAULT_DSA_PORT)
+        self._dsa_nodes = list(DEFAULT_DSA_NODES)
+        self._refresh_dsa_table()
         self._on_save_network_config()
 
     def get_network_config(self) -> dict:
@@ -1299,9 +1739,7 @@ class MainWindow(QMainWindow):
             "scu_ae_title": self.edit_scu_ae_title.text().strip(),
             "scp_ae_title": self.edit_scp_ae_title.text().strip(),
             "scp_port": self.spin_scp_port.value(),
-            "dsa_ae_title": self.edit_dsa_ae_title.text().strip(),
-            "dsa_host": self.edit_dsa_host.text().strip(),
-            "dsa_port": self.spin_dsa_port.value(),
+            "dsa_nodes": self._dsa_nodes,
         }
 
     def _update_scp_status_label(self):
@@ -1313,77 +1751,65 @@ class MainWindow(QMainWindow):
             f"AE Title: {ae}  |  端口: {port}  |  IP: {', '.join(local_ips)}"
         )
 
-    def _on_dsa_find(self):
-        """点击"查询 DSA"按钮，向 DSA 工作站发送 C-FIND。"""
-        query = {
-            "patient_name": "",
-            "patient_id": "",
-            "accession_number": "",
-        }
-        self.dsa_result_model.removeRows(0, self.dsa_result_model.rowCount())
-        self.lbl_dsa_status.setText("正在查询 DSA 工作站...")
-        self.btn_dsa_find.setEnabled(False)
-        self.request_dsa_find.emit(query)
+    # ---------- DSA 节点管理 ----------
 
-    def on_dsa_find_results(self, results: list):
-        """接收 DSA C-FIND 结果并填充表格。"""
-        self.btn_dsa_find.setEnabled(True)
-        self.dsa_result_model.removeRows(0, self.dsa_result_model.rowCount())
-
-        if not results:
-            self.lbl_dsa_status.setText("未找到匹配的检查")
-            return
-
-        for result in results:
+    def _refresh_dsa_table(self):
+        """刷新 DSA 节点表格显示。"""
+        self.dsa_nodes_model.removeRows(0, self.dsa_nodes_model.rowCount())
+        for node in self._dsa_nodes:
             row = [
-                QStandardItem(result.get("patient_name", "")),
-                QStandardItem(result.get("patient_id", "")),
-                QStandardItem(result.get("accession_number", "")),
-                QStandardItem(result.get("study_date", "")),
-                QStandardItem(result.get("study_instance_uid", "")),
+                QStandardItem(node.get("name", "")),
+                QStandardItem(node.get("ae_title", "")),
+                QStandardItem(node.get("host", "")),
+                QStandardItem(str(node.get("port", 11112))),
             ]
             for item in row:
                 item.setEditable(False)
-            self.dsa_result_model.appendRow(row)
+            self.dsa_nodes_model.appendRow(row)
 
-        self.lbl_dsa_status.setText(f"找到 {len(results)} 个检查")
-        self.btn_dsa_move.setEnabled(True)
+    def _on_dsa_add(self):
+        """添加 DSA 节点"""
+        dialog = DsaNodeEditDialog(parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._dsa_nodes.append(dialog.get_node())
+            self._refresh_dsa_table()
 
-    def _on_dsa_result_selected(self, index: QModelIndex):
-        """DSA 结果表格选中行变化。"""
-        row = index.row()
-        if row >= 0:
-            self.btn_dsa_move.setEnabled(True)
-
-    def _on_dsa_move(self):
-        """点击"从 DSA 拉取"按钮，发起 C-MOVE 请求。"""
-        selected = self.dsa_result_table.selectionModel().selectedRows()
+    def _on_dsa_edit(self):
+        """编辑选中的 DSA 节点"""
+        selected = self.dsa_nodes_table.selectionModel().selectedRows()
         if not selected:
-            QMessageBox.warning(self, "提示", "请先在表格中选择一个检查")
+            QMessageBox.warning(self, "提示", "请先选择一个 DSA 节点")
             return
-
         row = selected[0].row()
-        study_uid = self.dsa_result_model.item(row, 4).text()
-        if not study_uid:
-            QMessageBox.warning(self, "提示", "选中行缺少检查 UID")
+        if row < 0 or row >= len(self._dsa_nodes):
             return
+        dialog = DsaNodeEditDialog(node=self._dsa_nodes[row], parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._dsa_nodes[row] = dialog.get_node()
+            self._refresh_dsa_table()
 
-        scp_ae = self.edit_scp_ae_title.text().strip()
-        self.lbl_dsa_status.setText(f"正在从 DSA 拉取检查 {study_uid}...")
-        self.btn_dsa_move.setEnabled(False)
-        self.request_dsa_move.emit(study_uid, scp_ae)
-
-    def on_dsa_move_finished(self, success: int, total: int):
-        """DSA C-MOVE 完成回调。"""
-        self.btn_dsa_move.setEnabled(True)
-        self.lbl_dsa_status.setText(f"DSA 拉取完成: 成功 {success}/{total}")
-        QMessageBox.information(
-            self, "DSA 拉取完成",
-            f"从 DSA 工作站拉取完成\n成功: {success} / 总计: {total}"
+    def _on_dsa_delete(self):
+        """删除选中的 DSA 节点"""
+        selected = self.dsa_nodes_table.selectionModel().selectedRows()
+        if not selected:
+            QMessageBox.warning(self, "提示", "请先选择一个 DSA 节点")
+            return
+        row = selected[0].row()
+        if row < 0 or row >= len(self._dsa_nodes):
+            return
+        node = self._dsa_nodes[row]
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除 DSA 节点 \"{node.get('name', '')}\" 吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
         )
+        if reply == QMessageBox.Yes:
+            self._dsa_nodes.pop(row)
+            self._refresh_dsa_table()
 
     def _init_bottom_bar(self):
-        """底部操作栏：处理并发送 / 处理并导出"""
+        """底部信息栏：显示当前目标患者摘要"""
         layout = QHBoxLayout()
         layout.setSpacing(12)
 
@@ -1393,21 +1819,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.lbl_target_summary)
 
         layout.addStretch()
-
-        # 发送到 PACS 按钮
-        self.btn_send_pacs = QPushButton("📤 拆分并发送到 PACS")
-        self.btn_send_pacs.setMinimumHeight(38)
-        self.btn_send_pacs.setObjectName("success")
-        self.btn_send_pacs.clicked.connect(self._on_process_and_send)
-        layout.addWidget(self.btn_send_pacs)
-
-        # 导出到本地按钮
-        self.btn_export_local = QPushButton("💾 拆分并导出到本地...")
-        self.btn_export_local.setMinimumHeight(38)
-        self.btn_export_local.setObjectName("secondary")
-        self.btn_export_local.clicked.connect(self._on_process_and_export)
-        layout.addWidget(self.btn_export_local)
-
         self.centralWidget().layout().addLayout(layout)
 
     # ---------- 内部信号连接 ----------
@@ -1425,9 +1836,7 @@ class MainWindow(QMainWindow):
         self.network_signals.store_finished.connect(self._on_store_finished)
         self.network_signals.error_occurred.connect(self._show_error)
 
-        # DSA 信号
-        self.network_signals.dsa_find_results_ready.connect(self.on_dsa_find_results)
-        self.network_signals.dsa_move_finished.connect(self.on_dsa_move_finished)
+        # DSA 信号（查询/拉取通过弹窗临时连接，此处无需永久连接）
 
         self.processor_signals.process_progress.connect(self.progress_bar.setValue)
         self.processor_signals.process_finished.connect(self._on_process_finished)
@@ -1477,6 +1886,59 @@ class MainWindow(QMainWindow):
         """SCP 接收到新 Study 的回调（由外部触发更新树模型）"""
         self.status_bar.showMessage(f"接收到新检查: {patient_name} (UID: {study_uid})")
         # 注意：实际刷新树模型应由外部逻辑调用 add_study，这里仅做状态提示
+
+    def _on_show_pacs_query(self):
+        """显示主机查询弹窗"""
+        dialog = PacsQueryDialog(self)
+        dialog.request_find.connect(self.request_pacs_find.emit)
+        self.network_signals.find_results_ready.connect(dialog.on_results_ready)
+
+        if dialog.exec() == QDialog.Accepted and dialog.selected_data:
+            self._pacs_selected_data = dialog.selected_data
+            self._update_target_summary(dialog.selected_data)
+            # 切换到手动输入 Tab 并清空手动输入框，避免混淆
+            self.tab_widget.setCurrentIndex(0)
+            self.edit_manual_name.clear()
+            self.edit_manual_id.clear()
+            self.edit_manual_acc.clear()
+            self.status_bar.showMessage(
+                f"已选择目标患者: {dialog.selected_data['patient_name']}"
+            )
+        else:
+            # 弹窗取消时不清除之前的选择
+            pass
+
+        # 断开临时信号连接
+        try:
+            self.network_signals.find_results_ready.disconnect(dialog.on_results_ready)
+        except (TypeError, RuntimeError):
+            pass
+
+    def _on_show_dsa_query(self):
+        """显示 DSA 查询弹窗"""
+        scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
+        dialog = DsaQueryDialog(self._dsa_nodes, scp_ae, self)
+        dialog.request_find.connect(self.request_dsa_find.emit)
+        dialog.request_move.connect(self.request_dsa_move.emit)
+        self.network_signals.dsa_find_results_ready.connect(dialog.on_find_results)
+        self.network_signals.dsa_move_finished.connect(dialog.on_move_finished)
+
+        dialog.exec()
+
+        # 断开临时信号连接
+        for signal, slot in [
+            (self.network_signals.dsa_find_results_ready, dialog.on_find_results),
+            (self.network_signals.dsa_move_finished, dialog.on_move_finished),
+        ]:
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+
+    def _on_show_help(self):
+        """显示帮助文档弹窗"""
+        dialog = HelpDialog(self)
+        dialog.exec()
 
     def _on_refresh_tree(self):
         """手动刷新左侧树（可由外部业务逻辑实现）"""
@@ -1620,88 +2082,85 @@ class MainWindow(QMainWindow):
             self.lbl_target_summary.setText("目标患者: [未选择]")
 
     def _on_pacs_find(self):
-        """点击 PACS 查询按钮"""
+        """点击主机查询按钮"""
         query = {
             "patient_name": self.edit_find_name.text().strip(),
             "patient_id": self.edit_find_id.text().strip(),
             "accession_number": self.edit_find_acc.text().strip(),
         }
-        self.status_bar.showMessage("正在查询 PACS ...")
+        self.status_bar.showMessage("正在查询主机 ...")
         self.pacs_result_model.clear()
         self.pacs_result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
         self.request_pacs_find.emit(query)
 
     def _on_find_results_ready(self, results: List[Dict]):
-        """PACS 查询结果返回"""
+        """主机查询结果返回"""
         for r in results:
             self.pacs_result_model.add_result(r)
-        self.status_bar.showMessage(f"PACS 查询完成，返回 {len(results)} 条记录")
+        self.status_bar.showMessage(f"主机查询完成，返回 {len(results)} 条记录")
 
     def _on_pacs_selection_changed(self, current: QModelIndex, previous: QModelIndex):
-        """PACS 查询结果表格选中行变化"""
+        """主机查询结果表格选中行变化：自动填充到手动输入表单"""
         if current.isValid():
             data = self.pacs_result_model.get_selected_data(current.row())
             self.lbl_pacs_selected.setText(
                 f"已选择: {data['patient_name']} | ID: {data['patient_id']} | Acc: {data['accession_number']}"
             )
             self._update_target_summary(data)
+            # 自动填充到手动输入表单
+            self.edit_manual_name.setText(data.get("patient_name", ""))
+            self.edit_manual_id.setText(data.get("patient_id", ""))
+            self.edit_manual_acc.setText(data.get("accession_number", ""))
+            self.edit_manual_study_uid.setText(data.get("study_instance_uid", ""))
         else:
             self.lbl_pacs_selected.setText("未选择目标患者")
 
     def _get_target_patient_info(self) -> Optional[Dict]:
         """
-        获取当前界面选中的目标患者信息（根据当前 Tab）。
+        获取当前界面选中的目标患者信息。
+        从手动输入表单中读取（主机查询结果会自动填充到表单）。
         若信息不完整则返回 None，并弹出提示。
         """
-        if self.tab_widget.currentIndex() == 0:
-            # PACS 查询模式
-            index = self.table_results.selectionModel().currentIndex()
-            if not index.isValid():
-                QMessageBox.warning(self, "提示", "请先从 PACS 查询结果中选择一条患者记录")
-                return None
-            return self.pacs_result_model.get_selected_data(index.row())
-        else:
-            # 手动输入模式
-            name = self.edit_manual_name.text().strip()
-            pid = self.edit_manual_id.text().strip()
-            acc = self.edit_manual_acc.text().strip()
-            study_uid = self.edit_manual_study_uid.text().strip()
+        name = self.edit_manual_name.text().strip()
+        pid = self.edit_manual_id.text().strip()
+        acc = self.edit_manual_acc.text().strip()
+        study_uid = self.edit_manual_study_uid.text().strip()
 
-            if not name or not pid or not acc:
-                self.lbl_manual_hint.setText("请填写所有必填项（带 * 号）")
-                QMessageBox.warning(self, "提示", "患者姓名、患者ID、检查号为必填项")
-                return None
+        if not name or not pid or not acc:
+            self.lbl_manual_hint.setText("请填写所有必填项（带 * 号）")
+            QMessageBox.warning(self, "提示", "患者姓名、患者ID、检查号为必填项")
+            return None
 
-            self.lbl_manual_hint.setText("")
-            result = {
-                "patient_name": name,
-                "patient_id": pid,
-                "accession_number": acc,
-                "study_instance_uid": study_uid,
-            }
+        self.lbl_manual_hint.setText("")
+        result = {
+            "patient_name": name,
+            "patient_id": pid,
+            "accession_number": acc,
+            "study_instance_uid": study_uid,
+        }
 
-            # 可选项：仅在非空时加入
-            sex = self.edit_manual_sex.text().strip()
-            if sex:
-                result["patient_sex"] = sex
+        # 可选项：仅在非空时加入
+        sex = self.edit_manual_sex.text().strip()
+        if sex:
+            result["patient_sex"] = sex
 
-            birth = self.edit_manual_birth.text().strip()
-            if birth:
-                result["patient_birth_date"] = birth
+        birth = self.edit_manual_birth.text().strip()
+        if birth:
+            result["patient_birth_date"] = birth
 
-            age = self.edit_manual_age.text().strip()
-            if age:
-                result["patient_age"] = age
+        age = self.edit_manual_age.text().strip()
+        if age:
+            result["patient_age"] = age
 
-            inpatient_id = self.edit_manual_inpatient_id.text().strip()
-            if inpatient_id:
-                result["inpatient_id"] = inpatient_id
+        inpatient_id = self.edit_manual_inpatient_id.text().strip()
+        if inpatient_id:
+            result["inpatient_id"] = inpatient_id
 
-            series_number = self.edit_manual_series_number.text().strip()
-            if series_number:
-                result["series_number"] = series_number
+        series_number = self.edit_manual_series_number.text().strip()
+        if series_number:
+            result["series_number"] = series_number
 
-            return result
+        return result
 
     def _update_target_summary(self, data: Dict):
         """更新底部目标患者摘要标签"""
@@ -1712,7 +2171,7 @@ class MainWindow(QMainWindow):
 
     def _on_manual_input_changed(self):
         """手动输入框内容变化时实时更新底部摘要。"""
-        if self.tab_widget.currentIndex() != 1:
+        if self.tab_widget.currentIndex() != 0:
             return
         name = self.edit_manual_name.text().strip()
         pid = self.edit_manual_id.text().strip()
@@ -1729,14 +2188,6 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int):
         """Tab 切换时更新底部目标摘要。"""
         if index == 0:
-            # PACS 查询模式：根据表格当前选中行更新
-            sel = self.table_results.selectionModel().currentIndex()
-            if sel.isValid():
-                data = self.pacs_result_model.get_selected_data(sel.row())
-                self._update_target_summary(data)
-            else:
-                self.lbl_target_summary.setText("目标患者: [未选择]")
-        elif index == 1:
             # 手动输入模式
             self._on_manual_input_changed()
         else:
@@ -1748,7 +2199,7 @@ class MainWindow(QMainWindow):
         return self.tree_model.get_checked_series()
 
     def _on_process_and_send(self):
-        """点击：应用拆分并发送到 PACS"""
+        """点击：应用拆分并发送到主机"""
         target = self._get_target_patient_info()
         if target is None:
             return
@@ -1756,7 +2207,7 @@ class MainWindow(QMainWindow):
         if not series_list:
             QMessageBox.warning(self, "提示", "请先在左侧勾选需要拆分的序列")
             return
-        self.status_bar.showMessage("正在处理并发送到 PACS ...")
+        self.status_bar.showMessage("正在处理并发送到主机 ...")
         self.progress_bar.setValue(0)
         self.request_process_and_store.emit(series_list, target)
 
@@ -1792,7 +2243,7 @@ class MainWindow(QMainWindow):
     def _on_store_finished(self, success: int, total: int):
         """C-STORE 发送完成"""
         self.status_bar.showMessage(f"发送完成: 成功 {success}/{total}")
-        QMessageBox.information(self, "完成", f"成功发送 {success}/{total} 个文件到 PACS")
+        QMessageBox.information(self, "完成", f"成功发送 {success}/{total} 个文件到主机")
 
     def _on_process_finished(self, count: int, output_dir: str):
         """本地导出处理完成"""

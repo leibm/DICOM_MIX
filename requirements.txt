@@ -10,6 +10,9 @@ pydicom>=2.3.0
 # GUI framework (Qt for Python)
 PySide6>=6.4.0
 
+# Fluent Design UI widgets
+PySide6-Fluent-Widgets>=1.11.0
+
 # Matrix operations (DSA subtraction algorithm)
 numpy>=1.21.0
 

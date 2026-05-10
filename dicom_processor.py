@@ -281,7 +281,7 @@ def process_single_file(
         #
         #    dcmwrite 在保存时会遍历 Dataset 中的所有元素并原样写出，
         #    包括私有标签及其私有创建者（Private Creator）元素。
-        #    因此，重传回 PACS 后，这些私有标签仍然可用于后续减影处理。
+        #    因此，重传回主机后，这些私有标签仍然可用于后续减影处理。
         # ------------------------------------------------------------------
 
         # ------------------------------------------------------------------
@@ -420,10 +420,42 @@ class DicomProcessor(QObject):
         return base
 
     def _cleanup(self):
-        """清理之前的工作线程。"""
-        if self._thread and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(3000)
+        """清理之前的工作线程和信号连接。"""
+        try:
+            if self._thread:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait(3000)
+                # 显式断开信号，避免重复连接累积
+                try:
+                    self._thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass  # C++ 对象已被删除
+        try:
+            if self._worker:
+                try:
+                    self._worker.progress.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._thread = None
+            self._worker = None
 
     def _start_worker(self, file_list: List[str], target_info: TargetPatientInfo, output_dir: str):
         """内部方法：启动处理工作线程。"""

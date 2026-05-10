@@ -12,8 +12,8 @@ DICOM MIX Tools 的主入口，职责如下：
 3. 建立 UI 与各模块之间的信号/槽连接，实现完整的业务闭环：
    - 用户点击 SCP 启停 → 启动/停止 SCP 服务端
    - 用户选择本地文件夹 → 载入 DICOM 并刷新左侧树
-   - 用户查询 PACS → 发送 C-FIND 并展示结果
-   - 用户点击"发送到 PACS" → 先处理（覆写信息+重新生成UID），再 C-STORE
+   - 用户查询主机 → 发送 C-FIND 并展示结果
+   - 用户点击"发送到主机" → 先处理（覆写信息+重新生成UID），再 C-STORE
    - 用户点击"导出到本地" → 处理并保存到用户指定目录
 
 技术栈：PySide6, pynetdicom, pydicom
@@ -34,7 +34,341 @@ if application_dir not in sys.path:
     sys.path.insert(0, application_dir)
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, Qt, QTimer
+
+# Fluent Design 主题
+from qfluentwidgets import setTheme, Theme, setThemeColor
+
+FLUENT_STYLE = """
+/* 全局 Fluent 风格 */
+QWidget {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #f9f9f9;
+}
+
+QGroupBox {
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    margin-top: 8px;
+    padding-top: 10px;
+    padding-bottom: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+    font-weight: 600;
+    color: #1f2937;
+    font-size: 13px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 8px;
+    color: #374151;
+}
+
+QPushButton {
+    background-color: #ffffff;
+    color: #1f2937;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-weight: 500;
+    font-size: 13px;
+}
+
+QPushButton:hover {
+    background-color: #f3f4f6;
+    border-color: #9ca3af;
+}
+
+QPushButton:pressed {
+    background-color: #e5e7eb;
+}
+
+QPushButton#success {
+    background-color: #0078d4;
+    color: white;
+    border: none;
+}
+
+QPushButton#success:hover {
+    background-color: #106ebe;
+}
+
+QPushButton#success:pressed {
+    background-color: #005a9e;
+}
+
+QPushButton#success:checked {
+    background-color: #004578;
+    border: 2px solid #0078d4;
+}
+
+QPushButton#secondary {
+    background-color: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+}
+
+QPushButton#secondary:hover {
+    background-color: #e5e7eb;
+}
+
+QPushButton#danger {
+    background-color: #fef2f2;
+    color: #dc2626;
+    border: 1px solid #fecaca;
+}
+
+QPushButton#danger:hover {
+    background-color: #fee2e2;
+}
+
+QPushButton#panelBtn {
+    background-color: transparent;
+    color: #6b7280;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-weight: 500;
+}
+
+QPushButton#panelBtn:hover {
+    background-color: #f3f4f6;
+    color: #374151;
+}
+
+QPushButton#panelBtn:checked {
+    background-color: #e5e7eb;
+    color: #111827;
+}
+
+QLineEdit {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 10px;
+    background: #ffffff;
+    font-size: 13px;
+    color: #1f2937;
+}
+
+QLineEdit:focus {
+    border-color: #0078d4;
+}
+
+QComboBox {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 5px 10px;
+    background: #ffffff;
+    font-size: 13px;
+    color: #1f2937;
+    min-width: 80px;
+}
+
+QComboBox:focus {
+    border-color: #0078d4;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #6b7280;
+    width: 0;
+    height: 0;
+}
+
+QSpinBox {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: #ffffff;
+    font-size: 13px;
+}
+
+QSpinBox:focus {
+    border-color: #0078d4;
+}
+
+QProgressBar {
+    border: none;
+    border-radius: 4px;
+    background-color: #e5e7eb;
+    text-align: center;
+    color: #374151;
+    font-size: 11px;
+}
+
+QProgressBar::chunk {
+    background-color: #0078d4;
+    border-radius: 4px;
+}
+
+QTableView {
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background-color: #ffffff;
+    gridline-color: #f3f4f6;
+    font-size: 13px;
+    selection-background-color: #dbeafe;
+    selection-color: #1e40af;
+}
+
+QTableView::item {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f3f4f6;
+}
+
+QTableView::item:selected {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+QHeaderView::section {
+    background-color: #f9fafb;
+    color: #374151;
+    padding: 8px 10px;
+    border: none;
+    border-bottom: 1px solid #e5e7eb;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+QTreeView {
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background-color: #ffffff;
+    font-size: 13px;
+    outline: none;
+}
+
+QTreeView::item {
+    padding: 6px 4px;
+    min-height: 28px;
+    border-bottom: 1px solid #f9fafb;
+}
+
+QTreeView::item:selected {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+QTreeView::branch {
+    padding: 4px;
+}
+
+QTabWidget::pane {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background-color: #ffffff;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: #f9fafb;
+    color: #6b7280;
+    padding: 8px 16px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    border: 1px solid #e5e7eb;
+    border-bottom: none;
+    font-weight: 500;
+    font-size: 13px;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #0078d4;
+    border-bottom: 2px solid #0078d4;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #f3f4f6;
+    color: #374151;
+}
+
+QToolTip {
+    background-color: #1f2937;
+    color: #f9fafb;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+
+QMenu {
+    background-color: #ffffff;
+    color: #1f2937;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 6px;
+}
+
+QMenu::item {
+    padding: 8px 24px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+QMenu::item:selected {
+    background-color: #eff6ff;
+    color: #0078d4;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #e5e7eb;
+    margin: 6px 12px;
+}
+
+QStatusBar {
+    background-color: #f9fafb;
+    color: #6b7280;
+    border-top: 1px solid #e5e7eb;
+    font-size: 12px;
+}
+
+QDockWidget {
+    titlebar-close-icon: url(close.png);
+    titlebar-normal-icon: url(float.png);
+}
+
+QDockWidget::title {
+    background-color: #f9fafb;
+    padding: 8px 12px;
+    border: 1px solid #e5e7eb;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    font-weight: 600;
+    color: #374151;
+}
+
+QDockWidget::close-button, QDockWidget::float-button {
+    background-color: transparent;
+    border-radius: 4px;
+    padding: 2px;
+}
+
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+    background-color: #e5e7eb;
+}
+"""
 
 # 导入自定义模块
 from ui_main import MainWindow
@@ -46,6 +380,7 @@ from config import (
     DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
     DEFAULT_LOCAL_SCU_AE_TITLE, DEFAULT_TEMP_DIR,
     DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
+    DEFAULT_DSA_NODES,
 )
 
 
@@ -85,15 +420,19 @@ class ApplicationController(QObject):
             port=net_cfg.get("pacs_port", DEFAULT_PACS_PORT),
             local_ae_title=net_cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
         )
-        dsa_config = PacsNodeConfig(
-            ae_title=net_cfg.get("dsa_ae_title", DEFAULT_DSA_AE_TITLE),
-            host=net_cfg.get("dsa_host", DEFAULT_DSA_HOST),
-            port=net_cfg.get("dsa_port", DEFAULT_DSA_PORT),
-            local_ae_title=net_cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
-        )
+        dsa_nodes = net_cfg.get("dsa_nodes", [])
+        dsa_configs = [
+            PacsNodeConfig(
+                ae_title=n.get("ae_title", DEFAULT_DSA_AE_TITLE),
+                host=n.get("host", DEFAULT_DSA_HOST),
+                port=n.get("port", DEFAULT_DSA_PORT),
+                local_ae_title=net_cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
+            )
+            for n in dsa_nodes
+        ]
         self.network_mgr = DicomNetworkManager(
             pacs_config=pacs_config,
-            dsa_config=dsa_config,
+            dsa_configs=dsa_configs,
             parent=self
         )
 
@@ -108,6 +447,15 @@ class ApplicationController(QObject):
         # 4. 状态标记：用于处理"先处理再发送"的链式操作
         self._pending_store_after_process = False
 
+        # 5. SCP 接收防抖刷新定时器
+        # 连续接收多个文件时，只在最后一次接收后 1.5 秒刷新树，避免频繁刷新
+        self._scp_refresh_timer = QTimer(self)
+        self._scp_refresh_timer.setSingleShot(True)
+        self._scp_refresh_timer.timeout.connect(self._refresh_study_tree)
+
+        # 6. 启动后自动刷新数据源列表（延迟 300ms 等待 UI 渲染完成）
+        QTimer.singleShot(300, self._refresh_study_tree)
+
     # ---------- 信号连接 ----------
 
     def _connect_signals(self):
@@ -116,6 +464,10 @@ class ApplicationController(QObject):
         # ===== 数据输入模块 → UI =====
         self.input_mgr.signals.study_received.connect(
             self.window.input_signals.study_received
+        )
+        # SCP 接收新文件后，防抖自动刷新左侧树
+        self.input_mgr.signals.study_received.connect(
+            self._on_scp_study_received
         )
         self.input_mgr.signals.scp_status_changed.connect(
             self.window.input_signals.scp_status_changed
@@ -155,6 +507,10 @@ class ApplicationController(QObject):
         self.network_mgr.signals.dsa_move_finished.connect(
             self.window.network_signals.dsa_move_finished
         )
+        # C-MOVE 完成后延迟 3 秒自动刷新左侧树（给远端推送文件的时间）
+        self.network_mgr.signals.dsa_move_finished.connect(
+            self._on_dsa_move_auto_refresh
+        )
 
         # ===== 数据处理模块 → UI =====
         self.processor.signals.process_progress.connect(
@@ -176,14 +532,14 @@ class ApplicationController(QObject):
         self.window.request_process_and_store.connect(self._on_process_and_store)
         self.window.request_process_and_export.connect(self._on_process_and_export)
 
-        # DSA 请求
-        self.window.request_dsa_find.connect(self.network_mgr.query_dsa)
+        # DSA 请求（带 dsa_index 参数）
+        self.window.request_dsa_find.connect(self._on_dsa_find)
         self.window.request_dsa_move.connect(self._on_dsa_move)
 
         # 网络配置变更时重新初始化网络模块
         self.window.network_config_changed.connect(self._on_network_config_changed)
 
-        # 树刷新按钮
+        # 左侧刷新按钮
         self.window.btn_refresh_tree.clicked.connect(self._refresh_study_tree)
 
     # ---------- 业务逻辑处理 ----------
@@ -216,6 +572,16 @@ class ApplicationController(QObject):
         except Exception as e:
             self.window._show_error(f"刷新源数据失败: {e}")
 
+    def _on_scp_study_received(self, study_uid: str, patient_name: str):
+        """SCP 接收到新 Study 后，防抖自动刷新左侧树。"""
+        # 每次接收文件时重启定时器，延迟 1.5 秒后刷新
+        # 避免连续接收多个文件时频繁刷新树
+        self._scp_refresh_timer.start(1500)
+
+    def _on_dsa_move_auto_refresh(self, success: int, total: int):
+        """C-MOVE 完成后延迟刷新左侧树，给远端设备推送文件的时间。"""
+        QTimer.singleShot(3000, self._refresh_study_tree)
+
     def _on_local_load_finished(self, count: int):
         """本地文件夹载入完成回调：更新 UI 并刷新树。"""
         self.window.input_signals.local_load_finished.emit(count)
@@ -223,10 +589,10 @@ class ApplicationController(QObject):
 
     def _on_process_and_store(self, series_list: list, target_info: dict):
         """
-        用户点击"应用拆分并发送到 PACS"的处理流程：
+        用户点击"应用拆分并发送到主机"的处理流程：
         1. 从 series_list 提取文件路径
         2. 调用 processor 处理到临时目录（异步）
-        3. 在处理完成的回调中，将处理后的文件通过 C-STORE 发送到 PACS
+        3. 在处理完成的回调中，将处理后的文件通过 C-STORE 发送到主机
         """
         file_list = self._extract_files_from_series(series_list)
         if not file_list:
@@ -256,7 +622,7 @@ class ApplicationController(QObject):
         数据处理完成回调。
 
         如果是"处理并发送"模式（_pending_store_after_process=True），
-        则扫描输出目录并将处理后的文件发送到 PACS。
+        则扫描输出目录并将处理后的文件发送到主机。
         否则仅更新 UI（导出模式已在 UI 信号中处理）。
         """
         # 先向 UI 通知处理完成（更新进度条和状态栏）
@@ -276,42 +642,53 @@ class ApplicationController(QObject):
 
             # 启动 C-STORE 发送
             self.window.status_bar.showMessage(
-                f"处理完成，正在发送 {len(processed_files)} 个文件到 PACS..."
+                f"处理完成，正在发送 {len(processed_files)} 个文件到主机..."
             )
             self.network_mgr.send_files(processed_files)
 
-    def _on_dsa_move(self, study_uid: str, move_dest_ae: str):
+    def _on_dsa_find(self, query_dict: dict, dsa_index: int):
+        """
+        DSA C-FIND 请求回调。
+        向指定 DSA 工作站发起 C-FIND 查询。
+        """
+        self.network_mgr.query_dsa(query_dict, dsa_index)
+
+    def _on_dsa_move(self, study_uid: str, move_dest_ae: str, dsa_index: int):
         """
         DSA C-MOVE 请求回调。
-        向 DSA 工作站发起 C-MOVE，指示其将图像推送到本机 SCP。
+        向指定 DSA 工作站发起 C-MOVE，指示其将图像推送到本机 SCP。
         """
         self.window.status_bar.showMessage(f"正在从 DSA 拉取检查 {study_uid}...")
-        self.network_mgr.move_from_dsa(study_uid, move_dest_ae)
+        self.network_mgr.move_from_dsa(study_uid, move_dest_ae, dsa_index)
 
     def _on_network_config_changed(self, cfg: dict):
         """
         网络配置变更回调。
 
-        - PACS/SCU 配置：可直接重新初始化 NetworkManager，不影响运行中的操作。
+        - 主机/SCU 配置：可直接重新初始化 NetworkManager，不影响运行中的操作。
         - SCP 配置（AE Title / Port）：如果 SCP 正在运行，提示用户先停止再启动以应用新配置；
           如果未运行，则更新 input_mgr 的端口/AE Title。
         """
-        # 1. 重新初始化 NetworkManager（PACS + SCU + DSA）
+        # 1. 重新初始化 NetworkManager（主机 + SCU + DSA）
         pacs_config = PacsNodeConfig(
             ae_title=cfg.get("pacs_ae_title", DEFAULT_PACS_AE_TITLE),
             host=cfg.get("pacs_host", DEFAULT_PACS_HOST),
             port=cfg.get("pacs_port", DEFAULT_PACS_PORT),
             local_ae_title=cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
         )
-        dsa_config = PacsNodeConfig(
-            ae_title=cfg.get("dsa_ae_title", DEFAULT_DSA_AE_TITLE),
-            host=cfg.get("dsa_host", DEFAULT_DSA_HOST),
-            port=cfg.get("dsa_port", DEFAULT_DSA_PORT),
-            local_ae_title=cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
-        )
+        dsa_nodes = cfg.get("dsa_nodes", [])
+        dsa_configs = [
+            PacsNodeConfig(
+                ae_title=n.get("ae_title", DEFAULT_DSA_AE_TITLE),
+                host=n.get("host", DEFAULT_DSA_HOST),
+                port=n.get("port", DEFAULT_DSA_PORT),
+                local_ae_title=cfg.get("scu_ae_title", DEFAULT_LOCAL_SCU_AE_TITLE)
+            )
+            for n in dsa_nodes
+        ]
         self.network_mgr = DicomNetworkManager(
             pacs_config=pacs_config,
-            dsa_config=dsa_config,
+            dsa_configs=dsa_configs,
             parent=self
         )
         # 重新连接网络模块信号到 UI
@@ -337,16 +714,28 @@ class ApplicationController(QObject):
         self.network_mgr.signals.dsa_move_finished.connect(
             self.window.network_signals.dsa_move_finished
         )
-        # 重新连接请求信号
-        self.window.request_pacs_find.connect(self.network_mgr.find_studies)
-        self.window.request_dsa_find.connect(self.network_mgr.query_dsa)
-        self.window.request_dsa_move.connect(self._on_dsa_move)
+        self.network_mgr.signals.dsa_move_finished.connect(
+            self._on_dsa_move_auto_refresh
+        )
+        # 重新连接请求信号：先断开旧连接，避免重复累积
+        for signal, slot in [
+            (self.window.request_pacs_find, self.network_mgr.find_studies),
+            (self.window.request_dsa_find, self._on_dsa_find),
+            (self.window.request_dsa_move, self._on_dsa_move),
+        ]:
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            signal.connect(slot)
+        # request_dsa_move 连接的是 _on_dsa_move（ApplicationController 的方法），
+        # 不需要重新连接，因为它内部通过 self.network_mgr 访问当前实例
 
         # 2. SCP 配置：如果未运行，直接更新；如果运行中，提示用户
         if self.input_mgr.is_scp_running():
             QMessageBox.information(
                 self.window, "网络配置已更新",
-                "PACS / SCU 配置已即时生效。\n"
+                "主机 / SCU 配置已即时生效。\n"
                 "SCP 接收端配置（端口/AE Title）已保存，"
                 "请先停止 SCP 再重新启动以应用新配置。"
             )
@@ -362,6 +751,10 @@ class ApplicationController(QObject):
             self.input_mgr.signals.study_received.connect(
                 self.window.input_signals.study_received
             )
+            # SCP 接收新文件后，防抖自动刷新左侧树
+            self.input_mgr.signals.study_received.connect(
+                self._on_scp_study_received
+            )
             self.input_mgr.signals.scp_status_changed.connect(
                 self.window.input_signals.scp_status_changed
             )
@@ -374,9 +767,17 @@ class ApplicationController(QObject):
             self.input_mgr.signals.error_occurred.connect(
                 self.window.input_signals.error_occurred
             )
-            self.window.request_start_scp.connect(self.input_mgr.start_scp)
-            self.window.request_stop_scp.connect(self.input_mgr.stop_scp)
-            self.window.request_load_local.connect(self.input_mgr.load_local_folder)
+            # 先断开旧连接再重新连接，避免重复累积
+            for signal, slot in [
+                (self.window.request_start_scp, self.input_mgr.start_scp),
+                (self.window.request_stop_scp, self.input_mgr.stop_scp),
+                (self.window.request_load_local, self.input_mgr.load_local_folder),
+            ]:
+                try:
+                    signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                signal.connect(slot)
 
             self.window.status_bar.showMessage("网络配置已更新并即时生效")
 
@@ -395,7 +796,14 @@ def main():
     """主函数：初始化应用并启动事件循环。"""
     # PySide6 默认已启用高 DPI 缩放，无需手动设置
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # 使用 Fusion 风格，跨平台一致性较好
+    app.setStyle("Fusion")  # 使用 Fusion 作为基础，配合 QSS 覆盖
+
+    # 设置 Fluent Design 主题
+    setTheme(Theme.LIGHT)
+    setThemeColor("#0078d4")
+
+    # 应用全局 Fluent 风格 QSS
+    app.setStyleSheet(FLUENT_STYLE)
 
     # 设置应用信息
     app.setApplicationName("DICOM MIX Tools")

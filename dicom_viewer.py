@@ -248,6 +248,7 @@ class DSAViewerWidget(QWidget):
         self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.graphics_view.setAlignment(Qt.AlignCenter)
         self.graphics_view.setStyleSheet("border: none; background-color: transparent;")
         self.graphics_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.graphics_view.customContextMenuRequested.connect(
@@ -276,6 +277,17 @@ class DSAViewerWidget(QWidget):
         hbox.setContentsMargins(8, 5, 8, 5)
         hbox.setSpacing(8)
 
+        # 上一帧按钮
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setObjectName("playBtn")
+        self.btn_prev.setFixedSize(32, 32)
+        self.btn_prev.setToolTip("上一帧")
+        self.btn_prev.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_prev.setFocusPolicy(Qt.NoFocus)
+        self.btn_prev.setFlat(True)
+        self.btn_prev.clicked.connect(self._on_prev_frame)
+        hbox.addWidget(self.btn_prev)
+
         # 播放/暂停按钮（40x40 圆形，确保完整显示）
         self.btn_play = QPushButton("▶")
         self.btn_play.setObjectName("playBtn")
@@ -286,6 +298,17 @@ class DSAViewerWidget(QWidget):
         self.btn_play.setFlat(True)
         self.btn_play.clicked.connect(self.toggle_play)
         hbox.addWidget(self.btn_play)
+
+        # 下一帧按钮
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setObjectName("playBtn")
+        self.btn_next.setFixedSize(32, 32)
+        self.btn_next.setToolTip("下一帧")
+        self.btn_next.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_next.setFocusPolicy(Qt.NoFocus)
+        self.btn_next.setFlat(True)
+        self.btn_next.clicked.connect(self._on_next_frame_click)
+        hbox.addWidget(self.btn_next)
 
         # 帧滑块
         self.frame_slider = QSlider(Qt.Horizontal)
@@ -465,6 +488,7 @@ class DSAViewerWidget(QWidget):
         # 图像自适应居中
         if self._raw_frames:
             self.graphics_view.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
+            self.graphics_view.setAlignment(Qt.AlignCenter)
 
     # ---------- 事件过滤器：捕获 viewport 中键事件 ----------
 
@@ -576,6 +600,10 @@ class DSAViewerWidget(QWidget):
 
         pixmap = self._array_to_pixmap(disp)
         self.pixmap_item.setPixmap(pixmap)
+
+        # 更新 scene rect 以匹配当前图像尺寸，确保图像在视图中正确居中
+        self.scene.setSceneRect(self.pixmap_item.boundingRect())
+
         self.pixmap_item.update()
         self.scene.update()
         self.graphics_view.viewport().update()
@@ -657,6 +685,26 @@ class DSAViewerWidget(QWidget):
 
     def _on_next_frame(self):
         if not self._raw_frames:
+            return
+        self._current_idx = (self._current_idx + 1) % self._total_frames
+        self.update_display()
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setValue(self._current_idx)
+        self.frame_slider.blockSignals(False)
+
+    def _on_prev_frame(self):
+        """点击：上一帧"""
+        if not self._raw_frames or self._total_frames <= 1:
+            return
+        self._current_idx = (self._current_idx - 1) % self._total_frames
+        self.update_display()
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setValue(self._current_idx)
+        self.frame_slider.blockSignals(False)
+
+    def _on_next_frame_click(self):
+        """点击：下一帧（手动按钮）"""
+        if not self._raw_frames or self._total_frames <= 1:
             return
         self._current_idx = (self._current_idx + 1) % self._total_frames
         self.update_display()

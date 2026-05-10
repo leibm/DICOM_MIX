@@ -3,9 +3,9 @@
 dicom_network.py
 网络交互模块
 
-负责与 PACS 服务器的 DICOM 网络通信，提供两种核心功能：
-1. C-FIND SCU：作为服务类用户，向 PACS 查询患者/检查信息。
-2. C-STORE SCU：作为服务类用户，将处理后的 DICOM 文件推送到 PACS。
+负责与主机服务器的 DICOM 网络通信，提供两种核心功能：
+1. C-FIND SCU：作为服务类用户，向主机查询患者/检查信息。
+2. C-STORE SCU：作为服务类用户，将处理后的 DICOM 文件推送到主机。
 
 所有网络操作均在独立工作线程中执行，通过 Qt 信号与主 UI 线程通信，
 避免阻塞界面响应。
@@ -15,6 +15,7 @@ dicom_network.py
 
 import os
 import logging
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -64,17 +65,17 @@ class DicomNetworkSignals(QObject):
 
 
 # ------------------------------------------------------------------------------
-# PACS 节点配置
+# 主机节点配置
 # ------------------------------------------------------------------------------
 
 class PacsNodeConfig:
     """
-    PACS 节点配置数据类。
+    主机节点配置数据类。
 
     属性：
-        ae_title (str): 远端 PACS 的 AE Title
-        host (str): PACS 服务器 IP 地址或主机名
-        port (int): PACS 监听端口（通常为 104 或 11112）
+        ae_title (str): 远端主机的 AE Title
+        host (str): 主机服务器 IP 地址或主机名
+        port (int): 主机监听端口（通常为 104 或 11112）
         local_ae_title (str): 本机作为 SCU 时的 AE Title
     """
     def __init__(self, ae_title: str = "PACS", host: str = "127.0.0.1",
@@ -97,7 +98,7 @@ class CFindWorker(QObject):
     C-FIND SCU 工作线程。
 
     根据用户输入的查询条件（患者姓名、患者ID、检查号等）构建 C-FIND 请求，
-    发送至 PACS 服务器，并将返回的匹配结果以列表形式发射回 UI。
+    发送至主机服务器，并将返回的匹配结果以列表形式发射回 UI。
 
     信号：
         finished(List[Dict]): 查询成功完成，携带结果列表
@@ -112,6 +113,20 @@ class CFindWorker(QObject):
         self.pacs = pacs_config
         self.query_params = query_params
 
+    @staticmethod
+    def _format_study_date(date_range: str) -> str:
+        """将日期范围描述转换为 DICOM StudyDate 格式 (YYYYMMDD-YYYYMMDD)。"""
+        today = datetime.now().date()
+        today_str = today.strftime("%Y%m%d")
+
+        mapping = {
+            "TODAY": today_str,
+            "LAST3DAYS": (today - timedelta(days=2)).strftime("%Y%m%d") + "-" + today_str,
+            "LAST7DAYS": (today - timedelta(days=6)).strftime("%Y%m%d") + "-" + today_str,
+            "LAST30DAYS": (today - timedelta(days=29)).strftime("%Y%m%d") + "-" + today_str,
+        }
+        return mapping.get(date_range.upper(), date_range)
+
     def run(self):
         """执行 C-FIND 查询。"""
         try:
@@ -121,7 +136,7 @@ class CFindWorker(QObject):
             ae = AE(ae_title=self.pacs.local_ae_title)
 
             # 2. 添加查询上下文（支持 Patient Root 和 Study Root）
-            # 通常 PACS 至少支持其中一种
+            # 通常主机至少支持其中一种
             ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
 
@@ -131,12 +146,14 @@ class CFindWorker(QObject):
             ds.QueryRetrieveLevel = "STUDY"
 
             # 设置查询关键字（空白表示通配/返回）
-            # 注意：PACS 对模糊查询的支持取决于具体实现
+            # 注意：主机对模糊查询的支持取决于具体实现
             ds.PatientName = self.query_params.get("patient_name", "")
             ds.PatientID = self.query_params.get("patient_id", "")
             ds.AccessionNumber = self.query_params.get("accession_number", "")
             ds.StudyInstanceUID = ""  # 留空表示返回所有匹配的 StudyUID
-            ds.StudyDate = ""
+            ds.StudyDate = self._format_study_date(
+                self.query_params.get("study_date_range", "")
+            )
             ds.StudyTime = ""
             ds.StudyDescription = ""
             ds.NumberOfStudyRelatedSeries = ""
@@ -146,7 +163,7 @@ class CFindWorker(QObject):
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
 
             if not assoc.is_established:
-                error_msg = f"无法连接到 PACS: {self.pacs.ae_title}@{self.pacs.host}:{self.pacs.port}"
+                error_msg = f"无法连接到主机: {self.pacs.ae_title}@{self.pacs.host}:{self.pacs.port}"
                 logger.error(error_msg)
                 self.error.emit(error_msg)
                 return
@@ -158,21 +175,25 @@ class CFindWorker(QObject):
                 responses = assoc.send_c_find(ds, StudyRootQueryRetrieveInformationModelFind)
 
                 for status, identifier in responses:
-                    if status and status.Status == 0xFF00:  # Pending（匹配结果）
+                    if not status:
+                        continue
+                    if status.Status == 0xFF00:  # Pending（匹配结果）
                         if identifier is not None:
                             result = {
-                                "patient_name": getattr(identifier, "PatientName", ""),
-                                "patient_id": getattr(identifier, "PatientID", ""),
-                                "accession_number": getattr(identifier, "AccessionNumber", ""),
-                                "study_instance_uid": getattr(identifier, "StudyInstanceUID", ""),
-                                "study_date": getattr(identifier, "StudyDate", ""),
-                                "study_description": getattr(identifier, "StudyDescription", ""),
+                                "patient_name": str(getattr(identifier, "PatientName", "")),
+                                "patient_id": str(getattr(identifier, "PatientID", "")),
+                                "accession_number": str(getattr(identifier, "AccessionNumber", "")),
+                                "study_instance_uid": str(getattr(identifier, "StudyInstanceUID", "")),
+                                "study_date": str(getattr(identifier, "StudyDate", "")),
+                                "study_description": str(getattr(identifier, "StudyDescription", "")),
                             }
                             results.append(result)
                             logger.debug(f"C-FIND 匹配结果: {result}")
-                    elif status and status.Status == 0x0000:  # Success（查询完成）
+                    elif status.Status == 0x0000:  # Success（查询完成）
                         logger.info(f"C-FIND 查询完成，共 {len(results)} 条记录")
-                    elif status and status.Status & 0xF000 == 0xF000:  # 失败类状态码
+                    elif status.Status in (0xFF01,):  # Pending with warning
+                        logger.warning(f"C-FIND 警告状态: 0x{status.Status:04X}")
+                    else:  # 覆盖所有拒绝/失败状态码 (0xAxxx, 0xBxxx, 0xCxxx, 0xFxxx)
                         error_msg = f"C-FIND 失败，状态码: 0x{status.Status:04X}"
                         logger.error(error_msg)
                         self.error.emit(error_msg)
@@ -196,7 +217,7 @@ class CStoreWorker(QObject):
     """
     C-STORE SCU 工作线程。
 
-    将本地 DICOM 文件列表逐个通过 C-STORE 推送到 PACS 服务器。
+    将本地 DICOM 文件列表逐个通过 C-STORE 推送到主机服务器。
     优化策略：所有文件复用同一个 Association，减少频繁建连/断连开销。
 
     信号：
@@ -228,55 +249,84 @@ class CStoreWorker(QObject):
 
         try:
             logger.info(f"开始 C-STORE 发送 {total} 个文件到 {self.pacs}")
-            ae = AE(ae_title=self.pacs.local_ae_title)
 
-            # 为所有待发送的文件添加对应的 Storage Presentation Contexts
-            # pynetdicom 提供所有标准 Storage SOP Classes
-            from pynetdicom.presentation import AllStoragePresentationContexts
-            ae.requested_contexts = AllStoragePresentationContexts[:100]
+            # 先扫描所有文件，收集唯一的 SOP Class UID 和文件信息
+            from pydicom import dcmread
+            file_entries = []
+            unique_sop_classes = set()
+            for fpath in self.file_list:
+                try:
+                    ds = dcmread(fpath, stop_before_pixels=True)
+                    sop_class = getattr(ds, "SOPClassUID", None)
+                    if sop_class:
+                        file_entries.append((fpath, str(sop_class)))
+                        unique_sop_classes.add(str(sop_class))
+                    else:
+                        logger.warning(f"文件缺少 SOPClassUID，跳过: {fpath}")
+                except Exception as e:
+                    logger.warning(f"读取文件头失败 {fpath}: {e}")
+
+            if not file_entries:
+                self.error.emit("没有可发送的有效 DICOM 文件")
+                return
+
+            # 只为实际需要的 SOP Classes 添加 Presentation Contexts
+            # 避免协商过多上下文导致对方拒绝
+            ae = AE(ae_title=self.pacs.local_ae_title)
+            for sop_class in unique_sop_classes:
+                ae.add_requested_context(sop_class)
 
             # 建立关联
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
             if not assoc.is_established:
-                error_msg = f"无法连接到 PACS 进行 C-STORE: {self.pacs}"
+                error_msg = f"无法连接到主机进行 C-STORE: {self.pacs}"
                 logger.error(error_msg)
                 self.error.emit(error_msg)
                 return
 
-            for idx, fpath in enumerate(self.file_list, start=1):
-                self.progress.emit(idx, total)
-                try:
-                    # 读取 DICOM 文件（需要完整读取，因为要发送整个文件）
-                    from pydicom import dcmread
-                    ds = dcmread(fpath)
+            try:
+                for idx, (fpath, sop_class) in enumerate(file_entries, start=1):
+                    self.progress.emit(idx, len(file_entries))
+                    try:
+                        # 完整读取 DICOM 文件（包含像素数据）
+                        ds = dcmread(fpath)
 
-                    # 确保 file_meta 存在（pynetdicom 发送时需要）
-                    if not hasattr(ds, "file_meta") or ds.file_meta is None:
-                        ds.file_meta = Dataset()
-                        ds.file_meta.MediaStorageSOPClassUID = getattr(
-                            ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.2"
-                        )
-                        ds.file_meta.MediaStorageSOPInstanceUID = getattr(
-                            ds, "SOPInstanceUID", "1.2.3.4.5"
-                        )
-                        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-                        ds.file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.9.7756.1"
+                        # 确保 file_meta 存在（pynetdicom 发送时需要）
+                        if not hasattr(ds, "file_meta") or ds.file_meta is None:
+                            ds.file_meta = Dataset()
+                            ds.file_meta.MediaStorageSOPClassUID = getattr(
+                                ds, "SOPClassUID", sop_class
+                            )
+                            ds.file_meta.MediaStorageSOPInstanceUID = getattr(
+                                ds, "SOPInstanceUID", "1.2.3.4.5"
+                            )
+                            # 根据文件实际编码设置传输语法，避免编码不一致
+                            if ds.is_little_endian and ds.is_implicit_VR:
+                                ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+                            elif ds.is_little_endian and not ds.is_implicit_VR:
+                                ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                            else:
+                                ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                            ds.file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.9.7756.1"
 
-                    # 发送 C-STORE
-                    status = assoc.send_c_store(ds)
+                        # 发送 C-STORE
+                        status = assoc.send_c_store(ds)
 
-                    if status and status.Status == 0x0000:
-                        success_count += 1
-                        logger.info(f"C-STORE 成功: {os.path.basename(fpath)}")
-                    else:
-                        status_hex = f"0x{status.Status:04X}" if status else "None"
-                        logger.warning(f"C-STORE 失败 {os.path.basename(fpath)}, 状态: {status_hex}")
+                        if status and status.Status == 0x0000:
+                            success_count += 1
+                            logger.info(f"C-STORE 成功: {os.path.basename(fpath)}")
+                        else:
+                            status_hex = f"0x{status.Status:04X}" if status else "None"
+                            logger.warning(f"C-STORE 失败 {os.path.basename(fpath)}, 状态: {status_hex}")
 
-                except Exception as e:
-                    logger.warning(f"发送文件失败 {fpath}: {e}")
+                    except Exception as e:
+                        logger.warning(f"发送文件失败 {fpath}: {e}")
+            finally:
+                if assoc.is_established:
+                    assoc.release()
 
-            self.finished.emit(success_count, total)
-            logger.info(f"C-STORE 完成: 成功 {success_count}/{total}")
+            self.finished.emit(success_count, len(file_entries))
+            logger.info(f"C-STORE 完成: 成功 {success_count}/{len(file_entries)}")
 
         except Exception as e:
             logger.exception("C-STORE 发送异常")
@@ -349,28 +399,42 @@ class CMoveWorker(QObject):
             ds.StudyInstanceUID = self.study_uid
 
             # 发送 C-MOVE，move_dest 是目标 AE Title
-            responses = assoc.send_c_move(ds, move_dest=self.move_dest,
-                                          query_model=StudyRootQueryRetrieveInformationModelMove)
+            responses = assoc.send_c_move(
+                ds, self.move_dest,
+                query_model=StudyRootQueryRetrieveInformationModelMove
+            )
 
-            success = 0
-            total = 0
             for status, identifier in responses:
-                if status:
-                    status_type = status.Status
-                    if status_type == 0x0000:
-                        success += 1
-                        total += 1
-                        self.progress.emit(success, total)
-                    elif status_type in (0xFF00, 0xFF01):
-                        # Pending - operation in progress
-                        total += 1
-                        self.progress.emit(success, total)
+                if not status:
+                    continue
+                if status.Status == 0xFF00:
+                    # Pending - operation in progress
+                    if identifier:
+                        completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
+                        remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
+                        total_ops = completed + remaining
+                        self.progress.emit(completed, total_ops)
+                elif status.Status == 0x0000:
+                    # 最终成功完成，从 identifier 读取最终统计
+                    if identifier:
+                        completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
+                        failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
+                        total_ops = completed + failed
+                        self.finished.emit(completed, max(total_ops, 1))
                     else:
-                        total += 1
-                        logger.warning(f"C-MOVE 响应状态: 0x{status_type:04X}")
+                        self.finished.emit(0, 1)
+                    break
+                elif status.Status == 0xFF01:
+                    # Pending with warning，忽略
+                    continue
+                else:
+                    # 失败状态 (0xAxxx, 0xCxxx, 0xFxxx 等)
+                    error_msg = f"C-MOVE 失败，状态码: 0x{status.Status:04X}"
+                    logger.error(error_msg)
+                    self.error.emit(error_msg)
+                    return
 
-            self.finished.emit(success, max(total, 1))
-            logger.info(f"C-MOVE 完成: 成功 {success}/{total}")
+            logger.info("C-MOVE 请求完成")
 
         except Exception as e:
             logger.exception("C-MOVE 异常")
@@ -393,16 +457,16 @@ class DicomNetworkManager(QObject):
         send_files(file_list)     -> 触发 store_progress / store_finished 信号
 
     属性：
-        pacs_config (PacsNodeConfig): PACS 节点配置
+        pacs_config (PacsNodeConfig): 主机节点配置
         signals (DicomNetworkSignals): 统一信号接口
     """
 
     def __init__(self, pacs_config: Optional[PacsNodeConfig] = None,
-                 dsa_config: Optional[PacsNodeConfig] = None,
+                 dsa_configs: Optional[List[PacsNodeConfig]] = None,
                  parent: Optional[QObject] = None):
         super().__init__(parent)
         self.pacs_config = pacs_config or PacsNodeConfig()
-        self.dsa_config = dsa_config
+        self.dsa_configs = dsa_configs or []
         self.signals = DicomNetworkSignals()
 
         self._find_thread: Optional[QThread] = None
@@ -413,6 +477,7 @@ class DicomNetworkManager(QObject):
         self._dsa_find_worker: Optional[CFindWorker] = None
         self._dsa_move_thread: Optional[QThread] = None
         self._dsa_move_worker: Optional[CMoveWorker] = None
+        self._current_dsa_index: int = 0
 
     # ---------- C-FIND 接口 ----------
 
@@ -443,10 +508,37 @@ class DicomNetworkManager(QObject):
         logger.info(f"已启动 C-FIND 线程，查询条件: {query_dict}")
 
     def _cleanup_find(self):
-        """清理之前的 C-FIND 线程。"""
-        if self._find_thread and self._find_thread.isRunning():
-            self._find_thread.quit()
-            self._find_thread.wait(2000)
+        """清理之前的 C-FIND 线程和信号连接。"""
+        try:
+            if self._find_thread:
+                if self._find_thread.isRunning():
+                    self._find_thread.quit()
+                    self._find_thread.wait(2000)
+                try:
+                    self._find_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._find_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._find_worker:
+                try:
+                    self._find_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._find_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._find_thread = None
+            self._find_worker = None
 
     # ---------- C-STORE 接口 ----------
 
@@ -478,28 +570,64 @@ class DicomNetworkManager(QObject):
         logger.info(f"已启动 C-STORE 线程，文件数: {len(file_list)}")
 
     def _cleanup_store(self):
-        """清理之前的 C-STORE 线程。"""
-        if self._store_thread and self._store_thread.isRunning():
-            self._store_thread.quit()
-            self._store_thread.wait(2000)
+        """清理之前的 C-STORE 线程和信号连接。"""
+        try:
+            if self._store_thread:
+                if self._store_thread.isRunning():
+                    self._store_thread.quit()
+                    self._store_thread.wait(2000)
+                try:
+                    self._store_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._store_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._store_worker:
+                try:
+                    self._store_worker.progress.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._store_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._store_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._store_thread = None
+            self._store_worker = None
 
     # ---------- DSA C-FIND 接口 ----------
 
-    def query_dsa(self, query_dict: Dict):
+    def query_dsa(self, query_dict: Dict, dsa_index: int = 0):
         """
-        向 DSA 工作站发起 C-FIND 查询。
+        向指定 DSA 工作站发起 C-FIND 查询。
 
         参数：
             query_dict: 查询条件字典
+            dsa_index: DSA 节点索引（在 dsa_configs 列表中的位置）
         """
-        if not self.dsa_config:
+        if not self.dsa_configs:
             self.signals.error_occurred.emit("未配置 DSA 节点")
             return
+        if dsa_index < 0 or dsa_index >= len(self.dsa_configs):
+            self.signals.error_occurred.emit(f"DSA 节点索引 {dsa_index} 无效")
+            return
 
+        dsa_config = self.dsa_configs[dsa_index]
         self._cleanup_dsa_find()
 
         self._dsa_find_thread = QThread(self)
-        self._dsa_find_worker = CFindWorker(self.dsa_config, query_dict)
+        self._dsa_find_worker = CFindWorker(dsa_config, query_dict)
         self._dsa_find_worker.moveToThread(self._dsa_find_thread)
 
         self._dsa_find_worker.finished.connect(self.signals.dsa_find_results_ready)
@@ -511,32 +639,64 @@ class DicomNetworkManager(QObject):
         self._dsa_find_thread.finished.connect(self._dsa_find_thread.deleteLater)
 
         self._dsa_find_thread.start()
-        logger.info(f"已启动 DSA C-FIND，查询条件: {query_dict}")
+        logger.info(f"已启动 DSA C-FIND (节点 {dsa_index}: {dsa_config}), 查询条件: {query_dict}")
 
     def _cleanup_dsa_find(self):
-        """清理之前的 DSA C-FIND 线程。"""
-        if self._dsa_find_thread and self._dsa_find_thread.isRunning():
-            self._dsa_find_thread.quit()
-            self._dsa_find_thread.wait(2000)
+        """清理之前的 DSA C-FIND 线程和信号连接。"""
+        try:
+            if self._dsa_find_thread:
+                if self._dsa_find_thread.isRunning():
+                    self._dsa_find_thread.quit()
+                    self._dsa_find_thread.wait(2000)
+                try:
+                    self._dsa_find_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_find_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._dsa_find_worker:
+                try:
+                    self._dsa_find_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_find_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._dsa_find_thread = None
+            self._dsa_find_worker = None
 
     # ---------- DSA C-MOVE 接口 ----------
 
-    def move_from_dsa(self, study_uid: str, move_dest_ae: str):
+    def move_from_dsa(self, study_uid: str, move_dest_ae: str, dsa_index: int = 0):
         """
-        向 DSA 工作站发起 C-MOVE 请求，将指定检查拉取到本机 SCP。
+        向指定 DSA 工作站发起 C-MOVE 请求，将指定检查拉取到本机 SCP。
 
         参数：
             study_uid: StudyInstanceUID
             move_dest_ae: 本机 SCP 的 AE Title（C-MOVE 目标）
+            dsa_index: DSA 节点索引（在 dsa_configs 列表中的位置）
         """
-        if not self.dsa_config:
+        if not self.dsa_configs:
             self.signals.error_occurred.emit("未配置 DSA 节点")
             return
+        if dsa_index < 0 or dsa_index >= len(self.dsa_configs):
+            self.signals.error_occurred.emit(f"DSA 节点索引 {dsa_index} 无效")
+            return
 
+        dsa_config = self.dsa_configs[dsa_index]
         self._cleanup_dsa_move()
 
         self._dsa_move_thread = QThread(self)
-        self._dsa_move_worker = CMoveWorker(self.dsa_config, study_uid, move_dest_ae)
+        self._dsa_move_worker = CMoveWorker(dsa_config, study_uid, move_dest_ae)
         self._dsa_move_worker.moveToThread(self._dsa_move_thread)
 
         self._dsa_move_worker.progress.connect(self.signals.dsa_move_progress)
@@ -549,13 +709,44 @@ class DicomNetworkManager(QObject):
         self._dsa_move_thread.finished.connect(self._dsa_move_thread.deleteLater)
 
         self._dsa_move_thread.start()
-        logger.info(f"已启动 DSA C-MOVE，study={study_uid}, 目标={move_dest_ae}")
+        logger.info(f"已启动 DSA C-MOVE (节点 {dsa_index}: {dsa_config}), study={study_uid}, 目标={move_dest_ae}")
 
     def _cleanup_dsa_move(self):
-        """清理之前的 DSA C-MOVE 线程。"""
-        if self._dsa_move_thread and self._dsa_move_thread.isRunning():
-            self._dsa_move_thread.quit()
-            self._dsa_move_thread.wait(2000)
+        """清理之前的 DSA C-MOVE 线程和信号连接。"""
+        try:
+            if self._dsa_move_thread:
+                if self._dsa_move_thread.isRunning():
+                    self._dsa_move_thread.quit()
+                    self._dsa_move_thread.wait(2000)
+                try:
+                    self._dsa_move_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_move_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._dsa_move_worker:
+                try:
+                    self._dsa_move_worker.progress.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_move_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_move_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._dsa_move_thread = None
+            self._dsa_move_worker = None
 
 
 # ------------------------------------------------------------------------------
@@ -565,7 +756,7 @@ class DicomNetworkManager(QObject):
 if __name__ == "__main__":
     """
     独立运行此文件可进行 C-FIND 或 C-STORE 测试。
-    需要先配置一个可用的 PACS 测试节点。
+    需要先配置一个可用的主机测试节点。
 
     示例：
         python dicom_network.py
@@ -575,7 +766,7 @@ if __name__ == "__main__":
 
     app = QCoreApplication(sys.argv)
 
-    # 配置测试 PACS 节点（请根据实际情况修改）
+    # 配置测试主机节点（请根据实际情况修改）
     config = PacsNodeConfig(
         ae_title="TEST_PACS",
         host="127.0.0.1",
@@ -598,7 +789,7 @@ if __name__ == "__main__":
     manager.signals.find_results_ready.connect(on_find_results)
     manager.signals.error_occurred.connect(on_error)
 
-    # 测试查询（空条件表示查询所有，实际 PACS 可能拒绝）
+    # 测试查询（空条件表示查询所有，实际主机可能拒绝）
     print("启动 C-FIND 测试查询...")
     manager.find_studies({
         "patient_name": "*",
