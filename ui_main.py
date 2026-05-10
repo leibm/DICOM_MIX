@@ -1402,6 +1402,7 @@ class MainWindow(QMainWindow):
     request_process_and_store = Signal(list, dict)  # (选中序列, 目标患者信息)
     request_process_and_export = Signal(list, dict, str)  # (选中序列, 目标患者信息, 输出目录)
     network_config_changed = Signal(dict)  # 网络配置变更通知
+    temp_dir_changed = Signal(str)         # 缓存目录变更通知
     request_dsa_find = Signal(dict, int)        # 请求 DSA C-FIND (参数字典, dsa_index)
     request_dsa_move = Signal(str, str, int)    # 请求 DSA C-MOVE (study_uid, move_dest_ae, dsa_index)
     show_pacs_query_requested = Signal()   # 请求显示主机查询弹窗
@@ -2135,6 +2136,33 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(g3)
 
+        # --- 系统设置 ---
+        g_sys = QGroupBox("系统设置")
+        f_sys = QFormLayout(g_sys)
+        f_sys.setLabelAlignment(Qt.AlignRight)
+        f_sys.setSpacing(8)
+
+        temp_hbox = QHBoxLayout()
+        self.edit_temp_dir = QLineEdit()
+        self.edit_temp_dir.setPlaceholderText("默认使用 LOCALAPPDATA")
+        self.edit_temp_dir.setReadOnly(True)
+        temp_hbox.addWidget(self.edit_temp_dir)
+
+        self.btn_browse_temp = QPushButton("浏览...")
+        self.btn_browse_temp.setObjectName("secondary")
+        self.btn_browse_temp.setFixedWidth(60)
+        self.btn_browse_temp.clicked.connect(self._on_browse_temp_dir)
+        temp_hbox.addWidget(self.btn_browse_temp)
+
+        self.btn_open_temp = QPushButton("打开")
+        self.btn_open_temp.setObjectName("secondary")
+        self.btn_open_temp.setFixedWidth(50)
+        self.btn_open_temp.clicked.connect(self._on_open_temp_dir)
+        temp_hbox.addWidget(self.btn_open_temp)
+
+        f_sys.addRow("缓存目录:", temp_hbox)
+        layout.addWidget(g_sys)
+
         # 保存按钮 + 提示
         hbox = QHBoxLayout()
         self.btn_save_network = QPushButton("保存配置")
@@ -2180,7 +2208,7 @@ class MainWindow(QMainWindow):
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
-            DEFAULT_DSA_NODES,
+            DEFAULT_DSA_NODES, DEFAULT_TEMP_DIR,
         )
         settings = QSettings("MedicalSoftware", "DICOMMIXTools")
 
@@ -2225,6 +2253,10 @@ class MainWindow(QMainWindow):
 
         self._refresh_dsa_table()
 
+        # 缓存目录
+        temp_dir = settings.value("system/temp_dir", "")
+        self.edit_temp_dir.setText(temp_dir if temp_dir else DEFAULT_TEMP_DIR)
+
         # 更新 SCP 状态显示
         self._update_scp_status_label()
 
@@ -2242,11 +2274,19 @@ class MainWindow(QMainWindow):
         # 保存 DSA 多节点列表为 JSON
         settings.setValue("network/dsa_nodes_json", json.dumps(self._dsa_nodes))
 
+        # 保存缓存目录
+        temp_dir = self.edit_temp_dir.text().strip()
+        settings.setValue("system/temp_dir", temp_dir)
+
         self.lbl_network_hint.setText("配置已保存（重启后生效或立即应用）")
         QTimer.singleShot(3000, lambda: self.lbl_network_hint.setText(""))
 
         # 发射配置变更信号，供 main.py 重新初始化网络模块
         self.network_config_changed.emit(self.get_network_config())
+        # 发射缓存目录变更信号
+        self.temp_dir_changed.emit(temp_dir)
+        # 更新工具栏标签
+        self.lbl_temp_dir.setText(f"Temp: {temp_dir}")
 
     def _on_reset_network_config(self):
         """恢复默认配置。"""
@@ -2254,7 +2294,7 @@ class MainWindow(QMainWindow):
             DEFAULT_SCP_AE_TITLE, DEFAULT_SCP_PORT,
             DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
             DEFAULT_LOCAL_SCU_AE_TITLE,
-            DEFAULT_DSA_NODES,
+            DEFAULT_DSA_NODES, DEFAULT_TEMP_DIR,
         )
         self.edit_pacs_ae_title.setText(DEFAULT_PACS_AE_TITLE)
         self.edit_pacs_host.setText(DEFAULT_PACS_HOST)
@@ -2264,7 +2304,27 @@ class MainWindow(QMainWindow):
         self.spin_scp_port.setValue(DEFAULT_SCP_PORT)
         self._dsa_nodes = list(DEFAULT_DSA_NODES)
         self._refresh_dsa_table()
+        self.edit_temp_dir.setText(DEFAULT_TEMP_DIR)
         self._on_save_network_config()
+
+    def _on_browse_temp_dir(self):
+        """浏览选择缓存目录。"""
+        from PySide6.QtWidgets import QFileDialog
+        current = self.edit_temp_dir.text().strip()
+        if not current or not os.path.isdir(current):
+            current = self._get_temp_dir()
+        path = QFileDialog.getExistingDirectory(self, "选择缓存目录", current)
+        if path:
+            self.edit_temp_dir.setText(path)
+
+    def _on_open_temp_dir(self):
+        """用系统文件管理器打开当前缓存目录。"""
+        import subprocess
+        path = self.edit_temp_dir.text().strip()
+        if not path or not os.path.isdir(path):
+            path = self._get_temp_dir()
+        if os.path.isdir(path):
+            subprocess.run(["explorer", os.path.normpath(path)])
 
     def get_network_config(self) -> dict:
         """返回当前界面上的网络配置字典。"""
@@ -3028,10 +3088,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _get_temp_dir() -> str:
-        """获取临时目录路径（使用用户本地AppData，避免Program Files权限问题）"""
-        base = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "DICOM_MIX_Tools", "temp_dicom")
-        os.makedirs(base, exist_ok=True)
-        return base
+        """获取临时目录路径（优先使用用户在设置中指定的路径）。"""
+        from config import get_temp_dir
+        return get_temp_dir()
 
     def add_study_to_tree(self, study_data: Dict):
         """

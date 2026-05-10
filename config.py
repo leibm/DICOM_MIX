@@ -13,6 +13,25 @@ config.py
 import os
 
 # ------------------------------------------------------------------------------
+# 缓存目录配置
+# ------------------------------------------------------------------------------
+
+def get_temp_dir() -> str:
+    """获取用户配置的缓存目录（优先从 QSettings 读取），若未设置则返回默认值。"""
+    try:
+        from PySide6.QtCore import QSettings
+        settings = QSettings("MedicalSoftware", "DICOMMIXTools")
+        custom = settings.value("system/temp_dir", "")
+        if custom and isinstance(custom, str) and custom.strip():
+            path = custom.strip()
+            os.makedirs(path, exist_ok=True)
+            return path
+    except Exception:
+        pass
+    return DEFAULT_TEMP_DIR
+
+
+# ------------------------------------------------------------------------------
 # 版本信息
 # ------------------------------------------------------------------------------
 APP_NAME = "DICOM MIX Tools"

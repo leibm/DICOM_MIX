@@ -448,7 +448,7 @@ from config import (
     DEFAULT_PACS_AE_TITLE, DEFAULT_PACS_HOST, DEFAULT_PACS_PORT,
     DEFAULT_LOCAL_SCU_AE_TITLE, DEFAULT_TEMP_DIR,
     DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
-    DEFAULT_DSA_NODES,
+    DEFAULT_DSA_NODES, get_temp_dir,
 )
 
 
@@ -534,7 +534,7 @@ class ApplicationController(QObject):
         self.input_mgr = DicomInputManager(
             ae_title=net_cfg.get("scp_ae_title", DEFAULT_SCP_AE_TITLE),
             port=net_cfg.get("scp_port", DEFAULT_SCP_PORT),
-            temp_dir=DEFAULT_TEMP_DIR,
+            temp_dir=get_temp_dir(),
             parent=self
         )
 
@@ -561,7 +561,7 @@ class ApplicationController(QObject):
         )
 
         self.processor = DicomProcessor(
-            temp_dir=os.path.join(DEFAULT_TEMP_DIR, "processed"),
+            temp_dir=os.path.join(get_temp_dir(), "processed"),
             parent=self
         )
 
@@ -682,6 +682,9 @@ class ApplicationController(QObject):
 
         # 网络配置变更时重新初始化网络模块
         self.window.network_config_changed.connect(self._on_network_config_changed)
+
+        # 缓存目录变更时重新初始化输入模块和处理器
+        self.window.temp_dir_changed.connect(self._on_temp_dir_changed)
 
         # 左侧刷新按钮
         self.window.btn_refresh_tree.clicked.connect(self._refresh_study_tree)
@@ -907,7 +910,7 @@ class ApplicationController(QObject):
             self.input_mgr = DicomInputManager(
                 ae_title=cfg.get("scp_ae_title", DEFAULT_SCP_AE_TITLE),
                 port=cfg.get("scp_port", DEFAULT_SCP_PORT),
-                temp_dir=DEFAULT_TEMP_DIR,
+                temp_dir=get_temp_dir(),
                 parent=self
             )
             # 重新连接信号
@@ -946,6 +949,73 @@ class ApplicationController(QObject):
                 signal.connect(slot)
 
             self.window.status_bar.showMessage("网络配置已更新并即时生效")
+
+    def _on_temp_dir_changed(self, temp_dir: str):
+        """缓存目录变更回调：重新初始化 InputManager 和 Processor。"""
+        if self.input_mgr.is_scp_running():
+            QMessageBox.information(
+                self.window, "缓存目录已更新",
+                f"缓存目录已设置为：\n{temp_dir}\n\n"
+                "请先停止 SCP 接收，再重新启动以应用新缓存目录。"
+            )
+        else:
+            # SCP 未运行，安全重建 input_mgr
+            net_cfg = self.window.get_network_config()
+            self.input_mgr = DicomInputManager(
+                ae_title=net_cfg.get("scp_ae_title", DEFAULT_SCP_AE_TITLE),
+                port=net_cfg.get("scp_port", DEFAULT_SCP_PORT),
+                temp_dir=temp_dir,
+                parent=self
+            )
+            # 重新连接信号
+            self.input_mgr.signals.study_received.connect(
+                self.window.input_signals.study_received
+            )
+            self.input_mgr.signals.study_received.connect(
+                self._on_scp_study_received
+            )
+            self.input_mgr.signals.scp_status_changed.connect(
+                self.window.input_signals.scp_status_changed
+            )
+            self.input_mgr.signals.local_load_progress.connect(
+                self.window.input_signals.local_load_progress
+            )
+            self.input_mgr.signals.local_load_finished.connect(
+                self._on_local_load_finished
+            )
+            self.input_mgr.signals.error_occurred.connect(
+                self.window.input_signals.error_occurred
+            )
+            self.input_mgr.signals.scp_file_received.connect(
+                self.window.input_signals.scp_file_received
+            )
+            for signal, slot in [
+                (self.window.request_start_scp, self.input_mgr.start_scp),
+                (self.window.request_stop_scp, self.input_mgr.stop_scp),
+                (self.window.request_load_local, self.input_mgr.load_local_folder),
+            ]:
+                try:
+                    signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                signal.connect(slot)
+
+            # 重建 processor
+            self.processor = DicomProcessor(
+                temp_dir=os.path.join(temp_dir, "processed"),
+                parent=self
+            )
+            self.processor.signals.process_progress.connect(
+                self.window.processor_signals.process_progress
+            )
+            self.processor.signals.process_finished.connect(
+                self._on_process_finished
+            )
+            self.processor.signals.error_occurred.connect(
+                self.window.processor_signals.error_occurred
+            )
+
+            self.window.status_bar.showMessage(f"缓存目录已更新: {temp_dir}")
 
     # ---------- 导出处理 ----------
 
