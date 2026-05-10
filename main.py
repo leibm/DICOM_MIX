@@ -43,19 +43,19 @@ from PySide6.QtCore import QObject, Qt, QTimer, QThread, Signal
 from qfluentwidgets import setTheme, Theme, setThemeColor
 
 FLUENT_STYLE = """
-/* 全局 Fluent 风格 */
+/* 西门子医疗风格 - 深蓝 + 橙强调 */
 QWidget {
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
     font-size: 13px;
 }
 
 QMainWindow {
-    background-color: #f9f9f9;
+    background-color: #eef3f9;
 }
 
 QGroupBox {
     background-color: #ffffff;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-radius: 8px;
     margin-top: 8px;
     padding-top: 10px;
@@ -63,7 +63,7 @@ QGroupBox {
     padding-left: 10px;
     padding-right: 10px;
     font-weight: 600;
-    color: #1f2937;
+    color: #1a2a3a;
     font-size: 13px;
 }
 
@@ -71,13 +71,13 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
     padding: 0 8px;
-    color: #374151;
+    color: #005eb8;
 }
 
 QPushButton {
     background-color: #ffffff;
-    color: #1f2937;
-    border: 1px solid #d1d5db;
+    color: #1a2a3a;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     padding: 6px 14px;
     font-weight: 500;
@@ -85,56 +85,58 @@ QPushButton {
 }
 
 QPushButton:hover {
-    background-color: #f3f4f6;
-    border-color: #9ca3af;
+    background-color: #e8eef5;
+    border-color: #8ab4d8;
 }
 
 QPushButton:pressed {
-    background-color: #e5e7eb;
+    background-color: #d6e4f0;
 }
 
+/* 蓝色 - 主要操作 */
 QPushButton#success {
-    background-color: #0078d4;
+    background-color: #005eb8;
     color: white;
     border: none;
 }
 
 QPushButton#success:hover {
-    background-color: #106ebe;
+    background-color: #004a94;
 }
 
 QPushButton#success:pressed {
-    background-color: #005a9e;
+    background-color: #003870;
 }
 
 QPushButton#success:checked {
-    background-color: #004578;
-    border: 2px solid #0078d4;
+    background-color: #002c5a;
+    border: 2px solid #005eb8;
 }
 
-QPushButton#secondary {
-    background-color: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-}
-
-QPushButton#secondary:hover {
-    background-color: #e5e7eb;
-}
-
+/* 橙色 - 强调/警告 */
 QPushButton#danger {
-    background-color: #fef2f2;
-    color: #dc2626;
-    border: 1px solid #fecaca;
+    background-color: #fff5eb;
+    color: #e87722;
+    border: 1px solid #f5cba7;
 }
 
 QPushButton#danger:hover {
-    background-color: #fee2e2;
+    background-color: #ffe8d6;
+}
+
+QPushButton#secondary {
+    background-color: #e8eef5;
+    color: #005eb8;
+    border: 1px solid #c8d8e8;
+}
+
+QPushButton#secondary:hover {
+    background-color: #d6e4f0;
 }
 
 QPushButton#panelBtn {
     background-color: transparent;
-    color: #6b7280;
+    color: #5a6f80;
     border: none;
     border-radius: 6px;
     padding: 6px 12px;
@@ -142,40 +144,40 @@ QPushButton#panelBtn {
 }
 
 QPushButton#panelBtn:hover {
-    background-color: #f3f4f6;
-    color: #374151;
+    background-color: #e8eef5;
+    color: #005eb8;
 }
 
 QPushButton#panelBtn:checked {
-    background-color: #e5e7eb;
-    color: #111827;
+    background-color: #d6e4f0;
+    color: #003870;
 }
 
 QLineEdit {
-    border: 1px solid #d1d5db;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     padding: 6px 10px;
     background: #ffffff;
     font-size: 13px;
-    color: #1f2937;
+    color: #1a2a3a;
 }
 
 QLineEdit:focus {
-    border-color: #0078d4;
+    border-color: #005eb8;
 }
 
 QComboBox {
-    border: 1px solid #d1d5db;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     padding: 5px 10px;
     background: #ffffff;
     font-size: 13px;
-    color: #1f2937;
+    color: #1a2a3a;
     min-width: 80px;
 }
 
 QComboBox:focus {
-    border-color: #0078d4;
+    border-color: #005eb8;
 }
 
 QComboBox::drop-down {
@@ -187,69 +189,77 @@ QComboBox::down-arrow {
     image: none;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 5px solid #6b7280;
+    border-top: 5px solid #5a6f80;
     width: 0;
     height: 0;
 }
 
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    border: 1px solid #c8d8e8;
+    selection-background-color: #e8eef5;
+    selection-color: #005eb8;
+}
+
 QSpinBox {
-    border: 1px solid #d1d5db;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     padding: 4px 8px;
     background: #ffffff;
     font-size: 13px;
+    color: #1a2a3a;
 }
 
 QSpinBox:focus {
-    border-color: #0078d4;
+    border-color: #005eb8;
 }
 
 QProgressBar {
-    border: none;
+    border: 1px solid #c8d8e8;
     border-radius: 4px;
-    background-color: #e5e7eb;
+    background-color: #e8eef5;
     text-align: center;
-    color: #374151;
+    color: #1a2a3a;
     font-size: 11px;
 }
 
 QProgressBar::chunk {
-    background-color: #0078d4;
+    background-color: #005eb8;
     border-radius: 4px;
 }
 
 QTableView {
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     background-color: #ffffff;
-    gridline-color: #f3f4f6;
+    gridline-color: #eef3f9;
     font-size: 13px;
-    selection-background-color: #dbeafe;
-    selection-color: #1e40af;
+    selection-background-color: #d6e4f0;
+    selection-color: #003870;
 }
 
 QTableView::item {
     padding: 6px 8px;
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid #eef3f9;
 }
 
 QTableView::item:selected {
-    background-color: #dbeafe;
-    color: #1e40af;
+    background-color: #d6e4f0;
+    color: #003870;
 }
 
 QHeaderView::section {
-    background-color: #f9fafb;
-    color: #374151;
+    background-color: #e8eef5;
+    color: #1a2a3a;
     padding: 8px 10px;
     border: none;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid #c8d8e8;
     font-weight: 600;
     font-size: 12px;
 }
 
 QTreeView {
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-radius: 6px;
     background-color: #ffffff;
     font-size: 13px;
@@ -259,12 +269,12 @@ QTreeView {
 QTreeView::item {
     padding: 6px 4px;
     min-height: 28px;
-    border-bottom: 1px solid #f9fafb;
+    border-bottom: 1px solid #eef3f9;
 }
 
 QTreeView::item:selected {
-    background-color: #dbeafe;
-    color: #1e40af;
+    background-color: #d6e4f0;
+    color: #003870;
 }
 
 QTreeView::branch {
@@ -272,19 +282,19 @@ QTreeView::branch {
 }
 
 QTabWidget::pane {
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-radius: 8px;
     background-color: #ffffff;
     top: -1px;
 }
 
 QTabBar::tab {
-    background-color: #f9fafb;
-    color: #6b7280;
+    background-color: #e8eef5;
+    color: #5a6f80;
     padding: 8px 16px;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-bottom: none;
     font-weight: 500;
     font-size: 13px;
@@ -292,19 +302,19 @@ QTabBar::tab {
 
 QTabBar::tab:selected {
     background-color: #ffffff;
-    color: #0078d4;
-    border-bottom: 2px solid #0078d4;
+    color: #005eb8;
+    border-bottom: 2px solid #005eb8;
 }
 
 QTabBar::tab:hover:!selected {
-    background-color: #f3f4f6;
-    color: #374151;
+    background-color: #d6e4f0;
+    color: #1a2a3a;
 }
 
 QToolTip {
-    background-color: #1f2937;
-    color: #f9fafb;
-    border: 1px solid #374151;
+    background-color: #1a2a3a;
+    color: #ffffff;
+    border: none;
     border-radius: 6px;
     padding: 4px 8px;
     font-size: 12px;
@@ -317,8 +327,8 @@ QScrollArea {
 
 QMenu {
     background-color: #ffffff;
-    color: #1f2937;
-    border: 1px solid #e5e7eb;
+    color: #1a2a3a;
+    border: 1px solid #c8d8e8;
     border-radius: 8px;
     padding: 6px;
 }
@@ -330,20 +340,20 @@ QMenu::item {
 }
 
 QMenu::item:selected {
-    background-color: #eff6ff;
-    color: #0078d4;
+    background-color: #e8eef5;
+    color: #005eb8;
 }
 
 QMenu::separator {
     height: 1px;
-    background-color: #e5e7eb;
+    background-color: #c8d8e8;
     margin: 6px 12px;
 }
 
 QStatusBar {
-    background-color: #f9fafb;
-    color: #6b7280;
-    border-top: 1px solid #e5e7eb;
+    background-color: #e8eef5;
+    color: #5a6f80;
+    border-top: 1px solid #c8d8e8;
     font-size: 12px;
 }
 
@@ -353,13 +363,13 @@ QDockWidget {
 }
 
 QDockWidget::title {
-    background-color: #f9fafb;
+    background-color: #e8eef5;
     padding: 8px 12px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #c8d8e8;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
     font-weight: 600;
-    color: #374151;
+    color: #1a2a3a;
 }
 
 QDockWidget::close-button, QDockWidget::float-button {
@@ -369,7 +379,62 @@ QDockWidget::close-button, QDockWidget::float-button {
 }
 
 QDockWidget::close-button:hover, QDockWidget::float-button:hover {
-    background-color: #e5e7eb;
+    background-color: #d6e4f0;
+}
+
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #c8d8e8;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    background: #005eb8;
+    border-radius: 7px;
+    margin: -5px 0;
+}
+
+QSlider::sub-page:horizontal {
+    background: #005eb8;
+    border-radius: 2px;
+}
+
+QCheckBox {
+    color: #1a2a3a;
+    spacing: 6px;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #c8d8e8;
+    border-radius: 3px;
+    background-color: #ffffff;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #005eb8;
+    border-color: #005eb8;
+}
+
+QRadioButton {
+    color: #1a2a3a;
+    spacing: 6px;
+}
+
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #c8d8e8;
+    border-radius: 8px;
+    background-color: #ffffff;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #005eb8;
+    border-color: #005eb8;
 }
 """
 
@@ -560,6 +625,18 @@ class ApplicationController(QObject):
             self.window.network_signals.error_occurred
         )
 
+        # PACS C-MOVE 信号
+        self.network_mgr.signals.pacs_move_progress.connect(
+            self.window.network_signals.pacs_move_progress
+        )
+        self.network_mgr.signals.pacs_move_finished.connect(
+            self.window.network_signals.pacs_move_finished
+        )
+        # PACS C-MOVE 完成后也延迟刷新左侧树
+        self.network_mgr.signals.pacs_move_finished.connect(
+            self._on_dsa_move_auto_refresh
+        )
+
         # DSA 信号转发
         self.network_mgr.signals.dsa_find_results_ready.connect(
             self.window.network_signals.dsa_find_results_ready
@@ -592,6 +669,7 @@ class ApplicationController(QObject):
         self.window.request_stop_scp.connect(self.input_mgr.stop_scp)
         self.window.request_load_local.connect(self.input_mgr.load_local_folder)
         self.window.request_pacs_find.connect(self.network_mgr.find_studies)
+        self.window.request_pacs_move.connect(self._on_pacs_move)
         self.window.request_process_and_store.connect(self._on_process_and_store)
         self.window.request_process_and_export.connect(self._on_process_and_export)
 
@@ -719,6 +797,14 @@ class ApplicationController(QObject):
         """
         self.network_mgr.query_dsa(query_dict, dsa_index)
 
+    def _on_pacs_move(self, study_uid: str, move_dest_ae: str):
+        """
+        PACS C-MOVE 请求回调。
+        向主机发起 C-MOVE，指示其将图像推送到本机 SCP。
+        """
+        self.window.status_bar.showMessage(f"正在从主机拉取检查 {study_uid}...")
+        self.network_mgr.move_from_pacs(study_uid, move_dest_ae)
+
     def _on_dsa_move(self, study_uid: str, move_dest_ae: str, dsa_index: int):
         """
         DSA C-MOVE 请求回调。
@@ -770,6 +856,16 @@ class ApplicationController(QObject):
         self.network_mgr.signals.error_occurred.connect(
             self.window.network_signals.error_occurred
         )
+        # PACS C-MOVE 信号
+        self.network_mgr.signals.pacs_move_progress.connect(
+            self.window.network_signals.pacs_move_progress
+        )
+        self.network_mgr.signals.pacs_move_finished.connect(
+            self.window.network_signals.pacs_move_finished
+        )
+        self.network_mgr.signals.pacs_move_finished.connect(
+            self._on_dsa_move_auto_refresh
+        )
         # DSA 信号
         self.network_mgr.signals.dsa_find_results_ready.connect(
             self.window.network_signals.dsa_find_results_ready
@@ -786,6 +882,7 @@ class ApplicationController(QObject):
         # 重新连接请求信号：先断开旧连接，避免重复累积
         for signal, slot in [
             (self.window.request_pacs_find, self.network_mgr.find_studies),
+            (self.window.request_pacs_move, self._on_pacs_move),
             (self.window.request_dsa_find, self._on_dsa_find),
             (self.window.request_dsa_move, self._on_dsa_move),
         ]:
@@ -909,7 +1006,7 @@ def main():
 
     # 设置 Fluent Design 主题
     setTheme(Theme.LIGHT)
-    setThemeColor("#0078d4")
+    setThemeColor("#005eb8")
 
     # 应用全局 Fluent 风格 QSS
     app.setStyleSheet(FLUENT_STYLE)

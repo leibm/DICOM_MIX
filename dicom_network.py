@@ -63,6 +63,11 @@ class DicomNetworkSignals(QObject):
     # DSA C-MOVE 拉取完成（成功数, 总数）
     dsa_move_finished = Signal(int, int)
 
+    # PACS C-MOVE 拉取进度（当前数, 总数）
+    pacs_move_progress = Signal(int, int)
+    # PACS C-MOVE 拉取完成（成功数, 总数）
+    pacs_move_finished = Signal(int, int)
+
 
 # ------------------------------------------------------------------------------
 # 主机节点配置
@@ -404,25 +409,37 @@ class CMoveWorker(QObject):
                 query_model=StudyRootQueryRetrieveInformationModelMove
             )
 
+            max_completed = 0
+            max_total = 0
+            final_found = False
             for status, identifier in responses:
                 if not status:
                     continue
+                logger.info(f"C-MOVE 响应: status=0x{status.Status:04X}")
                 if status.Status == 0xFF00:
                     # Pending - operation in progress
                     if identifier:
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
                         total_ops = completed + remaining
+                        if total_ops > 0:
+                            max_completed = max(max_completed, completed)
+                            max_total = max(max_total, total_ops)
                         self.progress.emit(completed, total_ops)
                 elif status.Status in (0x0000, 0xB000):
                     # 0x0000 = 成功完成, 0xB000 = 完成但有部分警告
+                    final_found = True
                     if identifier:
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
                         total_ops = completed + failed
-                        self.finished.emit(completed, max(total_ops, 1))
+                        if total_ops > 0:
+                            max_completed = max(max_completed, completed)
+                            max_total = max(max_total, total_ops)
+                        self.finished.emit(max_completed, max(max_total, 1))
                     else:
-                        self.finished.emit(0, 1)
+                        # 最终响应通常不带 identifier，使用跟踪的最大值
+                        self.finished.emit(max_completed, max(max_total, 1))
                     break
                 elif status.Status == 0xFF01:
                     # Pending with warning，忽略
@@ -433,6 +450,11 @@ class CMoveWorker(QObject):
                     logger.error(error_msg)
                     self.error.emit(error_msg)
                     return
+
+            # 如果循环正常结束（未 break），说明未收到明确的最终状态，兜底上报
+            if not final_found:
+                logger.warning(f"C-MOVE 未收到最终状态，使用跟踪计数: {max_completed}/{max_total}")
+                self.finished.emit(max_completed, max(max_total, 1))
 
             logger.info("C-MOVE 请求完成")
 
@@ -478,6 +500,8 @@ class DicomNetworkManager(QObject):
         self._dsa_move_thread: Optional[QThread] = None
         self._dsa_move_worker: Optional[CMoveWorker] = None
         self._current_dsa_index: int = 0
+        self._pacs_move_thread: Optional[QThread] = None
+        self._pacs_move_worker: Optional[CMoveWorker] = None
 
     # ---------- C-FIND 接口 ----------
 
@@ -747,6 +771,71 @@ class DicomNetworkManager(QObject):
         finally:
             self._dsa_move_thread = None
             self._dsa_move_worker = None
+
+    # ---------- PACS C-MOVE 接口 ----------
+
+    def move_from_pacs(self, study_uid: str, move_dest_ae: str):
+        """
+        向主机（PACS）发起 C-MOVE 请求，将指定检查拉取到本机 SCP。
+
+        参数：
+            study_uid: StudyInstanceUID
+            move_dest_ae: 本机 SCP 的 AE Title（C-MOVE 目标）
+        """
+        self._cleanup_pacs_move()
+
+        self._pacs_move_thread = QThread(self)
+        self._pacs_move_worker = CMoveWorker(self.pacs_config, study_uid, move_dest_ae)
+        self._pacs_move_worker.moveToThread(self._pacs_move_thread)
+
+        self._pacs_move_worker.progress.connect(self.signals.pacs_move_progress)
+        self._pacs_move_worker.finished.connect(self.signals.pacs_move_finished)
+        self._pacs_move_worker.error.connect(self.signals.error_occurred)
+
+        self._pacs_move_thread.started.connect(self._pacs_move_worker.run)
+        self._pacs_move_worker.finished.connect(self._pacs_move_thread.quit)
+        self._pacs_move_worker.finished.connect(self._pacs_move_worker.deleteLater)
+        self._pacs_move_thread.finished.connect(self._pacs_move_thread.deleteLater)
+
+        self._pacs_move_thread.start()
+        logger.info(f"已启动 PACS C-MOVE ({self.pacs_config}), study={study_uid}, 目标={move_dest_ae}")
+
+    def _cleanup_pacs_move(self):
+        """清理之前的 PACS C-MOVE 线程和信号连接。"""
+        try:
+            if self._pacs_move_thread:
+                if self._pacs_move_thread.isRunning():
+                    self._pacs_move_thread.quit()
+                    self._pacs_move_thread.wait(2000)
+                try:
+                    self._pacs_move_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._pacs_move_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._pacs_move_worker:
+                try:
+                    self._pacs_move_worker.progress.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._pacs_move_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._pacs_move_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._pacs_move_thread = None
+            self._pacs_move_worker = None
 
 
 # ------------------------------------------------------------------------------

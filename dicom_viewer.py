@@ -171,6 +171,8 @@ class DSAViewerWidget(QWidget):
     mask_frame_changed = Signal(int)
     export_requested = Signal()  # 用户点击导出按钮
     load_progress = Signal(int, int)  # (当前文件序号, 总文件数)
+    prev_series_requested = Signal()  # 切换到上一序列
+    next_series_requested = Signal()  # 切换到下一序列
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -340,6 +342,34 @@ class DSAViewerWidget(QWidget):
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_requested.emit)
         hbox.addWidget(self.btn_export)
+
+        # 序列导航分隔线
+        sep2 = QWidget()
+        sep2.setFixedSize(1, 20)
+        sep2.setStyleSheet("background-color: rgba(255,255,255,60);")
+        hbox.addWidget(sep2)
+
+        # 上一序列按钮
+        self.btn_prev_series = QPushButton("⏮")
+        self.btn_prev_series.setObjectName("playBtn")
+        self.btn_prev_series.setFixedSize(32, 32)
+        self.btn_prev_series.setToolTip("上一序列")
+        self.btn_prev_series.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_prev_series.setFocusPolicy(Qt.NoFocus)
+        self.btn_prev_series.setFlat(True)
+        self.btn_prev_series.clicked.connect(self.prev_series_requested.emit)
+        hbox.addWidget(self.btn_prev_series)
+
+        # 下一序列按钮
+        self.btn_next_series = QPushButton("⏭")
+        self.btn_next_series.setObjectName("playBtn")
+        self.btn_next_series.setFixedSize(32, 32)
+        self.btn_next_series.setToolTip("下一序列")
+        self.btn_next_series.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_next_series.setFocusPolicy(Qt.NoFocus)
+        self.btn_next_series.setFlat(True)
+        self.btn_next_series.clicked.connect(self.next_series_requested.emit)
+        hbox.addWidget(self.btn_next_series)
 
         # 帧滑块
         self.frame_slider = QSlider(Qt.Horizontal)

@@ -103,6 +103,10 @@ class DicomNetworkSignals(QObject):
     store_finished = Signal(int, int)      # (成功数, 总数)
     error_occurred = Signal(str)
 
+    # PACS C-MOVE 信号
+    pacs_move_progress = Signal(int, int)
+    pacs_move_finished = Signal(int, int)
+
     # DSA 相关信号
     dsa_find_results_ready = Signal(list)  # DSA C-FIND 结果
     dsa_move_progress = Signal(int, int)   # DSA C-MOVE 进度
@@ -392,12 +396,14 @@ class PacsResultModel(QStandardItemModel):
 
 
 class PacsQueryDialog(QDialog):
-    """主机查询弹窗"""
+    """主机查询弹窗（支持 C-MOVE 拉取）"""
 
-    request_find = Signal(dict)  # 发出查询请求
+    request_find = Signal(dict)   # 发出查询请求
+    request_move = Signal(str, str)  # (study_uid, move_dest_ae)
 
-    def __init__(self, parent=None):
+    def __init__(self, scp_ae_title: str = "MIX_SCP", parent=None):
         super().__init__(parent)
+        self.scp_ae_title = scp_ae_title
         self.setWindowTitle("查询主机")
         self.setMinimumSize(800, 500)
         self.selected_data = None
@@ -450,17 +456,69 @@ class PacsQueryDialog(QDialog):
 
         self.table_results.selectionModel().currentRowChanged.connect(self._on_selection_changed)
 
+        # 进度条（拉取时显示）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximum(0)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
         # 按钮行
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+        self.btn_move = QPushButton("拉取数据")
+        self.btn_move.setEnabled(False)
+        self.btn_move.setMinimumWidth(90)
+        self.btn_move.setMinimumHeight(28)
+        self.btn_move.clicked.connect(self._on_move)
+        btn_layout.addWidget(self.btn_move)
         self.btn_ok = QPushButton("确定")
         self.btn_ok.setEnabled(False)
+        self.btn_ok.setMinimumWidth(70)
+        self.btn_ok.setMinimumHeight(28)
+        self.btn_ok.setDefault(True)
         self.btn_ok.clicked.connect(self.accept)
         btn_layout.addWidget(self.btn_ok)
         self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.setMinimumWidth(70)
+        self.btn_cancel.setMinimumHeight(28)
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
         layout.addLayout(btn_layout)
+
+        self._selected_study_uid = ""
+
+    def _on_move(self):
+        """拉取选中检查到本机 SCP"""
+        if not self._selected_study_uid:
+            QMessageBox.warning(self, "提示", "请先在表格中选择一个检查")
+            return
+        self.btn_move.setEnabled(False)
+        self.lbl_selected.setText("准备拉取...")
+        self.request_move.emit(self._selected_study_uid, self.scp_ae_title)
+
+    def show_move_progress(self):
+        """显示进度条"""
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(0)
+        self.lbl_selected.setText("正在从主机拉取...")
+
+    def on_move_progress(self, current: int, total: int):
+        """拉取进度"""
+        self.progress_bar.setVisible(True)
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+        self.lbl_selected.setText(f"正在从主机拉取: {current}/{total}")
+
+    def on_move_finished(self, success: int, total: int):
+        """拉取完成"""
+        self.progress_bar.setVisible(False)
+        self.btn_move.setEnabled(True)
+        self.lbl_selected.setText(f"主机拉取完成: 成功 {success}/{total}")
+        QMessageBox.information(self, "拉取完成", f"从主机拉取完成\n成功: {success} / 总计: {total}")
 
     def _on_find(self):
         """点击查询按钮"""
@@ -492,11 +550,15 @@ class PacsQueryDialog(QDialog):
                 f"已选择: {data['patient_name']} | ID: {data['patient_id']} | Acc: {data['accession_number']}"
             )
             self.selected_data = data
+            self._selected_study_uid = data.get("study_instance_uid", "")
             self.btn_ok.setEnabled(True)
+            self.btn_move.setEnabled(True)
         else:
             self.lbl_selected.setText("未选择目标患者")
             self.btn_ok.setEnabled(False)
+            self.btn_move.setEnabled(False)
             self.selected_data = None
+            self._selected_study_uid = ""
 
     def on_results_ready(self, results: list):
         """接收查询结果"""
@@ -733,14 +795,32 @@ class DsaQueryDialog(QDialog):
     request_find = Signal(dict, int)     # (查询参数, dsa_index)
     request_move = Signal(str, str, int)  # (study_uid, dest_ae, dsa_index)
 
-    def __init__(self, dsa_nodes: List[dict], scp_ae_title: str = "MIX_SCP", parent=None):
+    def __init__(self, dsa_nodes: List[dict], scp_ae_title: str = "MIX_SCP", scp_running: bool = False, parent=None):
         super().__init__(parent)
         self.dsa_nodes = dsa_nodes or []
         self.scp_ae_title = scp_ae_title
+        self.scp_running = scp_running
         self.setWindowTitle("查询 DSA")
         self.setMinimumSize(800, 500)
 
         layout = QVBoxLayout(self)
+
+        # SCP 状态提示
+        self.lbl_scp_status = QLabel()
+        self.lbl_scp_status.setAlignment(Qt.AlignCenter)
+        if not self.scp_running:
+            self.lbl_scp_status.setText("⚠️ SCP 服务未启动，无法拉取图像。请先启动 SCP 接收端。")
+            self.lbl_scp_status.setStyleSheet(
+                "background-color: #fef3c7; color: #92400e; padding: 8px 12px;"
+                "border-radius: 6px; font-size: 13px; font-weight: 500;"
+            )
+        else:
+            self.lbl_scp_status.setText(f"✅ SCP 运行中 ({self.scp_ae_title})，可以拉取图像")
+            self.lbl_scp_status.setStyleSheet(
+                "background-color: #d1fae5; color: #065f46; padding: 8px 12px;"
+                "border-radius: 6px; font-size: 13px; font-weight: 500;"
+            )
+        layout.addWidget(self.lbl_scp_status)
 
         # 顶部：DSA 节点选择 + 日期筛选
         top_layout = QHBoxLayout()
@@ -857,6 +937,13 @@ class DsaQueryDialog(QDialog):
         dsa_index = self.combo_dsa.currentData()
         if dsa_index is None or dsa_index < 0:
             QMessageBox.warning(self, "提示", "请先选择一个 DSA 节点")
+            return
+        if not self.scp_running:
+            QMessageBox.warning(
+                self, "SCP 未启动",
+                "SCP 接收服务未运行，无法从 DSA 拉取图像。\n"
+                "请先点击主窗口的「启动 SCP 接收」按钮，然后再试。"
+            )
             return
         self.lbl_status.setText(f"正在从 DSA 拉取检查 {self._selected_study_uid}...")
         self.btn_move.setEnabled(False)
@@ -1015,6 +1102,63 @@ class HelpDialog(QDialog):
         """
 
 
+class AboutDialog(QDialog):
+    """关于软件弹窗"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("关于 DICOM MIX Tools")
+        self.setMinimumSize(480, 360)
+        self.resize(520, 400)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        # 标题
+        title = QLabel("DICOM MIX Tools")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #005eb8;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # 版本
+        version = QLabel("版本 V3.0")
+        version.setStyleSheet("font-size: 14px; color: #6b7280;")
+        version.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version)
+
+        # 描述
+        desc = QLabel(
+            "DSA 图像路由与编辑工具\n"
+            "用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。"
+        )
+        desc.setStyleSheet("font-size: 13px; color: #374151; line-height: 1.6;")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # 技术栈
+        tech = QLabel(
+            "技术栈：PySide6 · pydicom · pynetdicom · numpy · opencv-python\n"
+            "许可证：MIT License"
+        )
+        tech.setStyleSheet("font-size: 12px; color: #9ca3af; line-height: 1.6;")
+        tech.setAlignment(Qt.AlignCenter)
+        tech.setWordWrap(True)
+        layout.addWidget(tech)
+
+        layout.addStretch()
+
+        # 关闭按钮
+        btn_close = QPushButton("关闭")
+        btn_close.setObjectName("secondary")
+        btn_close.clicked.connect(self.accept)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+
 # ------------------------------------------------------------------------------
 # 主窗口
 # ------------------------------------------------------------------------------
@@ -1034,6 +1178,7 @@ class MainWindow(QMainWindow):
     request_stop_scp = Signal()            # 请求停止 SCP
     request_load_local = Signal(str)       # 请求加载本地文件夹 (path)
     request_pacs_find = Signal(dict)       # 请求 C-FIND (参数字典)
+    request_pacs_move = Signal(str, str)   # 请求 PACS C-MOVE (study_uid, move_dest_ae)
     request_process_and_store = Signal(list, dict)  # (选中序列, 目标患者信息)
     request_process_and_export = Signal(list, dict, str)  # (选中序列, 目标患者信息, 输出目录)
     network_config_changed = Signal(dict)  # 网络配置变更通知
@@ -1088,6 +1233,9 @@ class MainWindow(QMainWindow):
 
         # DSA 节点列表（在 _load_network_config 中从 QSettings 加载）
         self._dsa_nodes: List[dict] = []
+
+        # SCP 运行状态（用于 DSA 查询弹窗提示）
+        self._scp_running = False
 
         # ---- 1. 顶部工具栏 ----
         self._init_toolbar()
@@ -1205,6 +1353,15 @@ class MainWindow(QMainWindow):
         self.btn_help.setIconSize(QSize(20, 20))
         self.btn_help.clicked.connect(self._on_show_help)
         toolbar.addWidget(self.btn_help)
+
+        # 关于按钮
+        self.btn_about = QPushButton()
+        self.btn_about.setIcon(FluentIcon.INFO.icon())
+        self.btn_about.setToolTip("关于软件")
+        self.btn_about.setFixedSize(36, 36)
+        self.btn_about.setIconSize(QSize(20, 20))
+        self.btn_about.clicked.connect(self._on_show_about)
+        toolbar.addWidget(self.btn_about)
 
     def _init_central_splitter(self):
         """中部主体：左右分割面板（左: 源数据树, 中: DSA 预览），右侧面板通过工具栏按钮弹出"""
@@ -1975,6 +2132,10 @@ class MainWindow(QMainWindow):
         self.network_signals.store_finished.connect(self._on_store_finished)
         self.network_signals.error_occurred.connect(self._show_error)
 
+        # PACS C-MOVE 进度
+        self.network_signals.pacs_move_progress.connect(self._on_pacs_move_progress)
+        self.network_signals.pacs_move_finished.connect(self._on_pacs_move_finished)
+
         # DSA C-MOVE 进度
         self.network_signals.dsa_move_progress.connect(self._on_dsa_move_progress)
         self.network_signals.dsa_move_finished.connect(self._on_dsa_move_finished)
@@ -1994,6 +2155,10 @@ class MainWindow(QMainWindow):
         # DSA 查看器加载进度
         self.dsa_viewer.load_progress.connect(self._on_viewer_load_progress)
 
+        # DSA 查看器序列导航
+        self.dsa_viewer.prev_series_requested.connect(self._on_prev_series)
+        self.dsa_viewer.next_series_requested.connect(self._on_next_series)
+
     # ---------- 槽函数 / 事件处理 ----------
 
     def _on_scp_toggle(self, checked: bool):
@@ -2005,6 +2170,7 @@ class MainWindow(QMainWindow):
 
     def _on_scp_status_changed(self, running: bool, message: str):
         """SCP 状态变化回调"""
+        self._scp_running = running
         self.btn_scp_toggle.setChecked(running)
         self.btn_scp_toggle.setText("停止 SCP 接收" if running else "启动 SCP 接收")
         self.status_bar.showMessage(message)
@@ -2050,6 +2216,19 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(success)
         self.status_bar.showMessage(f"DSA 拉取完成: {success}/{total}")
 
+    def _on_pacs_move_progress(self, current: int, total: int):
+        """PACS C-MOVE 拉取进度"""
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+            self.status_bar.showMessage(f"主机拉取进度: {current}/{total}")
+
+    def _on_pacs_move_finished(self, success: int, total: int):
+        """PACS C-MOVE 拉取完成"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(success)
+        self.status_bar.showMessage(f"主机拉取完成: {success}/{total}")
+
     def _on_viewer_load_progress(self, current: int, total: int):
         """DSA 查看器加载图像进度"""
         if total > 0:
@@ -2067,9 +2246,13 @@ class MainWindow(QMainWindow):
 
     def _on_show_pacs_query(self):
         """显示主机查询弹窗"""
-        dialog = PacsQueryDialog(self)
+        scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
+        dialog = PacsQueryDialog(scp_ae, self)
         dialog.request_find.connect(self.request_pacs_find.emit)
+        dialog.request_move.connect(self.request_pacs_move.emit)
         self.network_signals.find_results_ready.connect(dialog.on_results_ready)
+        self.network_signals.pacs_move_progress.connect(dialog.on_move_progress)
+        self.network_signals.pacs_move_finished.connect(dialog.on_move_finished)
 
         if dialog.exec() == QDialog.Accepted and dialog.selected_data:
             self._pacs_selected_data = dialog.selected_data
@@ -2087,15 +2270,20 @@ class MainWindow(QMainWindow):
             pass
 
         # 断开临时信号连接
-        try:
-            self.network_signals.find_results_ready.disconnect(dialog.on_results_ready)
-        except (TypeError, RuntimeError):
-            pass
+        for sig, slot in [
+            (self.network_signals.find_results_ready, dialog.on_results_ready),
+            (self.network_signals.pacs_move_progress, dialog.on_move_progress),
+            (self.network_signals.pacs_move_finished, dialog.on_move_finished),
+        ]:
+            try:
+                sig.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
 
     def _on_show_dsa_query(self):
         """显示 DSA 查询弹窗"""
         scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
-        dialog = DsaQueryDialog(self._dsa_nodes, scp_ae, self)
+        dialog = DsaQueryDialog(self._dsa_nodes, scp_ae, self._scp_running, self)
         dialog.request_find.connect(self.request_dsa_find.emit)
         dialog.request_move.connect(self.request_dsa_move.emit)
         self.network_signals.dsa_find_results_ready.connect(dialog.on_find_results)
@@ -2116,6 +2304,11 @@ class MainWindow(QMainWindow):
     def _on_show_help(self):
         """显示帮助文档弹窗"""
         dialog = HelpDialog(self)
+        dialog.exec()
+
+    def _on_show_about(self):
+        """显示关于软件弹窗"""
+        dialog = AboutDialog(self)
         dialog.exec()
 
     def _on_show_export(self):
@@ -2196,6 +2389,85 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "完成", f"缓存清除完成\n共清理 {deleted_count} 项")
         except Exception as e:
             self._show_error(f"清除缓存失败: {e}")
+
+    def _on_prev_series(self):
+        """切换到上一序列：当前序列自动取消勾选，选中上一序列。"""
+        current = self.tree_view.selectionModel().currentIndex()
+        if not current.isValid():
+            return
+
+        item = current.internalPointer()
+        if not item:
+            return
+
+        # 向上找到序列节点
+        series_item = item
+        while series_item and series_item.parent and series_item.parent != self.tree_model.root_item:
+            if series_item.data.get("type", "") == "序列":
+                break
+            series_item = series_item.parent
+        if not series_item or series_item.data.get("type", "") != "序列":
+            return
+
+        # 取消勾选当前序列
+        series_item.checked_state = Qt.Unchecked
+        series_index = self.tree_model.createIndex(series_item.row(), 0, series_item)
+        self.tree_model.dataChanged.emit(series_index, series_index, [Qt.CheckStateRole])
+
+        # 找上一序列（同一父节点下的前一个兄弟）
+        parent = series_item.parent
+        if not parent:
+            return
+        prev_row = series_item.row() - 1
+        if prev_row < 0:
+            return
+        prev_item = parent.child(prev_row)
+        if not prev_item:
+            return
+
+        # 选中上一序列
+        prev_index = self.tree_model.createIndex(prev_row, 0, prev_item)
+        self.tree_view.setCurrentIndex(prev_index)
+        self.tree_view.selectionModel().select(
+            prev_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
+        )
+
+    def _on_next_series(self):
+        """切换到下一序列：选中下一序列（自动勾选由 selection_changed 处理）。"""
+        current = self.tree_view.selectionModel().currentIndex()
+        if not current.isValid():
+            return
+
+        item = current.internalPointer()
+        if not item:
+            return
+
+        # 向上找到序列节点
+        series_item = item
+        while series_item and series_item.parent and series_item.parent != self.tree_model.root_item:
+            if series_item.data.get("type", "") == "序列":
+                break
+            series_item = series_item.parent
+        if not series_item or series_item.data.get("type", "") != "序列":
+            return
+
+        # 找下一序列（同一父节点下的后一个兄弟）
+        parent = series_item.parent
+        if not parent:
+            return
+        next_row = series_item.row() + 1
+        if next_row >= parent.child_count():
+            return
+        next_item = parent.child(next_row)
+        if not next_item:
+            return
+
+        # 选中下一序列（自动勾选）
+        next_index = self.tree_model.createIndex(next_row, 0, next_item)
+        self.tree_view.setCurrentIndex(next_index)
+        self.tree_view.selectionModel().select(
+            next_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
+        )
 
     def _on_tree_selection_changed(self, current: QModelIndex, previous: QModelIndex):
         """
