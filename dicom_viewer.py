@@ -236,14 +236,17 @@ class DSAViewerWidget(QWidget):
         panel = QWidget()
         panel.setStyleSheet("background-color: transparent;")
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # 不设置 layout，完全手动管理子控件位置
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
 
         # 图像面板：圆角深色背景，内部容纳 graphics_view 和悬浮控制条
-        self.image_panel = QWidget(panel)
+        self.image_panel = QWidget()
         self.image_panel.setStyleSheet("""
             background-color: #0f0f0f;
             border-radius: 12px;
         """)
+        vbox.addWidget(self.image_panel, stretch=1)
 
         # QGraphicsView：无边框、无滚动条、抗锯齿
         self.graphics_view = QGraphicsView(self.image_panel)
@@ -543,20 +546,16 @@ class DSAViewerWidget(QWidget):
         QTimer.singleShot(10, self._layout_image_area)
 
     def _layout_image_area(self):
-        """image_panel 填满可用空间，内部控件填满/悬浮，图像自适应居中。"""
+        """image_panel 由 QVBoxLayout 自动填满，内部控件手动布局。"""
         if not hasattr(self, "image_panel") or not self.image_panel.parentWidget():
             return
 
-        # 强制 layout 立即更新，确保读取到最新尺寸
+        # 强制 layout 立即更新
         if self.layout():
             self.layout().activate()
 
-        panel = self.image_panel.parentWidget()
-        avail_w = panel.width()
-        avail_h = panel.height()
-
-        # 填满可用空间
-        self.image_panel.setGeometry(0, 0, avail_w, avail_h)
+        avail_w = self.image_panel.width()
+        avail_h = self.image_panel.height()
 
         # graphics_view 填满 image_panel
         self.graphics_view.setGeometry(0, 0, avail_w, avail_h)
