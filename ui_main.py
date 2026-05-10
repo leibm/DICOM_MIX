@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox,
     QDockWidget, QSizePolicy, QScrollArea,
     QToolButton, QMenu, QComboBox, QDialog, QTextBrowser,
+    QRadioButton,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer, QSize
 from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap, QIcon
@@ -2085,21 +2086,22 @@ class MainWindow(QMainWindow):
         if not viewer or viewer.total_frames == 0:
             QMessageBox.warning(self, "提示", "当前没有加载图像序列")
             return
-        dialog = ExportDialog(
+        self._export_dialog = ExportDialog(
             total_frames=viewer.total_frames,
             frame_size=viewer.frame_size,
             fps=viewer._fps,
             parent=self
         )
         # 连接导出请求信号到主窗口信号（由 main.py 处理实际导出）
-        dialog.request_export.connect(self.request_export.emit)
-        dialog.exec()
+        self._export_dialog.request_export.connect(self.request_export.emit)
+        self._export_dialog.exec()
 
         # 断开临时连接
         try:
-            dialog.request_export.disconnect(self.request_export.emit)
+            self._export_dialog.request_export.disconnect(self.request_export.emit)
         except (TypeError, RuntimeError):
             pass
+        self._export_dialog = None
 
     def _on_refresh_tree(self):
         """手动刷新左侧树（可由外部业务逻辑实现）"""
@@ -2376,7 +2378,17 @@ class MainWindow(QMainWindow):
         """点击：应用拆分并导出到本地"""
         target = self._get_target_patient_info()
         if target is None:
-            return
+            # 必填项为空时提示用户，允许按原始信息导出
+            reply = QMessageBox.question(
+                self, "提示",
+                "未填写目标患者信息（姓名/ID/检查号）。\n"
+                "点击「是」将按原始患者信息导出，点击「否」返回填写。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            target = {}  # 空字典表示使用原始信息
         series_list = self._get_selected_series()
         if not series_list:
             QMessageBox.warning(self, "提示", "请先在左侧勾选需要拆分的序列")

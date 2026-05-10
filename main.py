@@ -858,12 +858,8 @@ class ApplicationController(QObject):
         )
         self._export_worker.moveToThread(self._export_thread)
 
-        # 连接信号到导出对话框（如果还打开的话）
-        export_dialog = None
-        for w in QApplication.topLevelWidgets():
-            if isinstance(w, ExportDialog) and w.isVisible():
-                export_dialog = w
-                break
+        # 连接信号到导出对话框
+        export_dialog = getattr(self.window, '_export_dialog', None)
 
         if export_dialog:
             self._export_worker.progress.connect(export_dialog.on_progress)

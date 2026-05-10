@@ -228,9 +228,12 @@ def process_single_file(
         # 3. 覆写患者信息与检查信息（0010 Patient 组、0020 Study 组、0008 AccessionNumber）
         #    注意：此处仅覆写关键标签，不删除任何其他标签，确保私有标签保留。
         # ------------------------------------------------------------------
-        ds.PatientName = target_info.patient_name
-        ds.PatientID = target_info.patient_id
-        ds.AccessionNumber = target_info.accession_number
+        if target_info.patient_name:
+            ds.PatientName = target_info.patient_name
+        if target_info.patient_id:
+            ds.PatientID = target_info.patient_id
+        if target_info.accession_number:
+            ds.AccessionNumber = target_info.accession_number
         ds.StudyInstanceUID = target_info.ensure_study_uid()
 
         # 可选字段：仅在非空时覆写
