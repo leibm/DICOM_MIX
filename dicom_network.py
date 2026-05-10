@@ -411,6 +411,7 @@ class CMoveWorker(QObject):
 
             max_completed = 0
             max_total = 0
+            pending_count = 0
             final_found = False
             for status, identifier in responses:
                 if not status:
@@ -418,6 +419,7 @@ class CMoveWorker(QObject):
                 logger.info(f"C-MOVE 响应: status=0x{status.Status:04X}")
                 if status.Status == 0xFF00:
                     # Pending - operation in progress
+                    pending_count += 1
                     if identifier:
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
@@ -442,9 +444,13 @@ class CMoveWorker(QObject):
                             max_total = max(max_total, total_ops)
                         elif completed > 0:
                             max_total = max(max_total, completed)
+                        if max_completed == 0 and pending_count > 0:
+                            max_completed = pending_count
                         self.finished.emit(max_completed, max(max_total, max_completed, 1))
                     else:
                         # 最终响应通常不带 identifier，使用跟踪的最大值
+                        if max_completed == 0 and pending_count > 0:
+                            max_completed = pending_count
                         self.finished.emit(max_completed, max(max_total, max_completed, 1))
                     break
                 elif status.Status == 0xFF01:
@@ -459,8 +465,10 @@ class CMoveWorker(QObject):
 
             # 如果循环正常结束（未 break），说明未收到明确的最终状态，兜底上报
             if not final_found:
+                if max_completed == 0 and pending_count > 0:
+                    max_completed = pending_count
                 logger.warning(f"C-MOVE 未收到最终状态，使用跟踪计数: {max_completed}/{max_total}")
-                self.finished.emit(max_completed, max(max_total, 1))
+                self.finished.emit(max_completed, max(max_total, max_completed, 1))
 
             logger.info("C-MOVE 请求完成")
 

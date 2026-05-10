@@ -24,7 +24,7 @@ from pydicom import dcmread
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider,
     QLabel, QCheckBox, QGroupBox, QSpinBox, QGraphicsView,
-    QGraphicsScene, QGraphicsPixmapItem, QMenu
+    QGraphicsScene, QGraphicsPixmapItem, QMenu, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QPoint, QEvent
 from PySide6.QtGui import QImage, QPixmap, QPainter, QCursor
@@ -173,9 +173,11 @@ class DSAViewerWidget(QWidget):
     load_progress = Signal(int, int)  # (当前文件序号, 总文件数)
     prev_series_requested = Signal()  # 切换到上一序列
     next_series_requested = Signal()  # 切换到下一序列
+    status_message = Signal(str)      # 状态栏提示信息
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._init_state()
         self._init_ui()
 
@@ -233,6 +235,7 @@ class DSAViewerWidget(QWidget):
         """
         panel = QWidget()
         panel.setStyleSheet("background-color: transparent;")
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # 不设置 layout，完全手动管理子控件位置
 
         # 图像面板：圆角深色背景，内部容纳 graphics_view 和悬浮控制条
@@ -531,13 +534,22 @@ class DSAViewerWidget(QWidget):
     def resizeEvent(self, event):
         """窗口尺寸变化时重新计算图像区与悬浮控制条位置。"""
         super().resizeEvent(event)
-        # 延迟一帧执行，确保 QHBoxLayout 已完成子控件尺寸分配
-        QTimer.singleShot(0, self._layout_image_area)
+        # 延迟执行，确保 QHBoxLayout 已完成子控件尺寸分配
+        QTimer.singleShot(10, self._layout_image_area)
+
+    def showEvent(self, event):
+        """首次显示时强制布局一次。"""
+        super().showEvent(event)
+        QTimer.singleShot(10, self._layout_image_area)
 
     def _layout_image_area(self):
         """image_panel 填满可用空间，内部控件填满/悬浮，图像自适应居中。"""
         if not hasattr(self, "image_panel") or not self.image_panel.parentWidget():
             return
+
+        # 强制 layout 立即更新，确保读取到最新尺寸
+        if self.layout():
+            self.layout().activate()
 
         panel = self.image_panel.parentWidget()
         avail_w = panel.width()
@@ -772,6 +784,9 @@ class DSAViewerWidget(QWidget):
         """点击：上一帧"""
         if not self._raw_frames or self._total_frames <= 1:
             return
+        if self._current_idx == 0:
+            self.status_message.emit("已经是第一帧")
+            return
         self._current_idx = (self._current_idx - 1) % self._total_frames
         self.update_display()
         self.frame_slider.blockSignals(True)
@@ -781,6 +796,9 @@ class DSAViewerWidget(QWidget):
     def _on_next_frame_click(self):
         """点击：下一帧（手动按钮）"""
         if not self._raw_frames or self._total_frames <= 1:
+            return
+        if self._current_idx == self._total_frames - 1:
+            self.status_message.emit("已经是最后一帧")
             return
         self._current_idx = (self._current_idx + 1) % self._total_frames
         self.update_display()

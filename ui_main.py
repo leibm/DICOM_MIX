@@ -1477,11 +1477,30 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("主工具栏")
         self.addToolBar(toolbar)
 
-        # SCP 启停按钮
-        self.btn_scp_toggle = QPushButton("▶ 启动 SCP")
+        # SCP 启停按钮（运行时变红）
+        self.btn_scp_toggle = QPushButton("启动 SCP 接收")
         self.btn_scp_toggle.setCheckable(True)
-        self.btn_scp_toggle.setMinimumWidth(100)
-        self.btn_scp_toggle.setObjectName("success")
+        self.btn_scp_toggle.setMinimumWidth(120)
+        self.btn_scp_toggle.setStyleSheet("""
+            QPushButton {
+                background-color: #22c55e;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background-color: #16a34a; }
+            QPushButton:pressed { background-color: #15803d; }
+            QPushButton:checked {
+                background-color: #ef4444;
+                color: white;
+            }
+            QPushButton:checked:hover { background-color: #dc2626; }
+            QPushButton:checked:pressed { background-color: #b91c1c; }
+        """)
+        self.btn_scp_toggle.setToolTip("启动 SCP 接收")
         self.btn_scp_toggle.toggled.connect(self._on_scp_toggle)
         toolbar.addWidget(self.btn_scp_toggle)
 
@@ -2380,6 +2399,9 @@ class MainWindow(QMainWindow):
         self.dsa_viewer.prev_series_requested.connect(self._on_prev_series)
         self.dsa_viewer.next_series_requested.connect(self._on_next_series)
 
+        # DSA 查看器状态栏提示
+        self.dsa_viewer.status_message.connect(self.status_bar.showMessage)
+
     # ---------- 槽函数 / 事件处理 ----------
 
     def _on_scp_toggle(self, checked: bool):
@@ -2394,6 +2416,7 @@ class MainWindow(QMainWindow):
         self._scp_running = running
         self.btn_scp_toggle.setChecked(running)
         self.btn_scp_toggle.setText("停止 SCP 接收" if running else "启动 SCP 接收")
+        self.btn_scp_toggle.setToolTip("停止 SCP 接收" if running else "启动 SCP 接收")
         self.status_bar.showMessage(message)
         # 实时同步到已打开的查询弹窗
         scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
@@ -2681,6 +2704,7 @@ class MainWindow(QMainWindow):
             return
         prev_row = series_item.row() - 1
         if prev_row < 0:
+            self.status_bar.showMessage("已经是第一个序列", 3000)
             return
         prev_item = parent.child(prev_row)
         if not prev_item:
@@ -2718,6 +2742,7 @@ class MainWindow(QMainWindow):
             return
         next_row = series_item.row() + 1
         if next_row >= parent.child_count():
+            self.status_bar.showMessage("已经是最后一个序列", 3000)
             return
         next_item = parent.child(next_row)
         if not next_item:
