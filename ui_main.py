@@ -1985,6 +1985,9 @@ class MainWindow(QMainWindow):
         # DSA 查看器导出按钮
         self.dsa_viewer.export_requested.connect(self._on_show_export)
 
+        # DSA 查看器加载进度
+        self.dsa_viewer.load_progress.connect(self._on_viewer_load_progress)
+
     # ---------- 槽函数 / 事件处理 ----------
 
     def _on_scp_toggle(self, checked: bool):
@@ -2021,6 +2024,16 @@ class MainWindow(QMainWindow):
         """本地载入完成回调"""
         self.status_bar.showMessage(f"本地载入完成，共加载 {count} 个 DICOM 文件")
         self.progress_bar.setValue(self.progress_bar.maximum())
+
+    def _on_viewer_load_progress(self, current: int, total: int):
+        """DSA 查看器加载图像进度"""
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+            self.status_bar.showMessage(f"正在加载图像: {current}/{total}")
+            # 加载完成后恢复进度条
+            if current >= total:
+                QTimer.singleShot(500, lambda: self.progress_bar.setValue(0))
 
     def _on_study_received(self, study_uid: str, patient_name: str):
         """SCP 接收到新 Study 的回调（由外部触发更新树模型）"""

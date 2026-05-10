@@ -170,6 +170,7 @@ class DSAViewerWidget(QWidget):
 
     mask_frame_changed = Signal(int)
     export_requested = Signal()  # 用户点击导出按钮
+    load_progress = Signal(int, int)  # (当前文件序号, 总文件数)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -551,7 +552,9 @@ class DSAViewerWidget(QWidget):
         frames: List[np.ndarray] = []
         pmin, pmax = float("inf"), float("-inf")
 
-        for fpath in file_list:
+        total_files = len(file_list)
+        for idx, fpath in enumerate(file_list, 1):
+            self.load_progress.emit(idx, total_files)
             try:
                 ds = dcmread(fpath, stop_before_pixels=False)
                 arr = ds.pixel_array
