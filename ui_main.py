@@ -92,6 +92,7 @@ class DicomInputSignals(QObject):
     scp_status_changed = Signal(bool, str) # (是否运行中, 状态文本)
     local_load_progress = Signal(int, int) # (当前数量, 总数量)
     local_load_finished = Signal(int)      # (成功加载的文件数)
+    scp_file_received = Signal(int)        # SCP 已接收文件总数
     error_occurred = Signal(str)           # 错误信息
 
 
@@ -1966,12 +1967,17 @@ class MainWindow(QMainWindow):
         self.input_signals.scp_status_changed.connect(self._on_scp_status_changed)
         self.input_signals.local_load_progress.connect(self._on_local_load_progress)
         self.input_signals.local_load_finished.connect(self._on_local_load_finished)
+        self.input_signals.scp_file_received.connect(self._on_scp_file_received)
         self.input_signals.error_occurred.connect(self._show_error)
 
         self.network_signals.find_results_ready.connect(self._on_find_results_ready)
         self.network_signals.store_progress.connect(self._on_store_progress)
         self.network_signals.store_finished.connect(self._on_store_finished)
         self.network_signals.error_occurred.connect(self._show_error)
+
+        # DSA C-MOVE 进度
+        self.network_signals.dsa_move_progress.connect(self._on_dsa_move_progress)
+        self.network_signals.dsa_move_finished.connect(self._on_dsa_move_finished)
 
         # DSA 信号（查询/拉取通过弹窗临时连接，此处无需永久连接）
 
@@ -2024,6 +2030,24 @@ class MainWindow(QMainWindow):
         """本地载入完成回调"""
         self.status_bar.showMessage(f"本地载入完成，共加载 {count} 个 DICOM 文件")
         self.progress_bar.setValue(self.progress_bar.maximum())
+
+    def _on_scp_file_received(self, count: int):
+        """SCP 接收文件进度（无总量，持续累加显示）"""
+        self.progress_bar.setMaximum(0)  # 无限进度条模式
+        self.status_bar.showMessage(f"SCP 接收中: 已接收 {count} 个文件")
+
+    def _on_dsa_move_progress(self, current: int, total: int):
+        """DSA C-MOVE 拉取进度"""
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+            self.status_bar.showMessage(f"DSA 拉取进度: {current}/{total}")
+
+    def _on_dsa_move_finished(self, success: int, total: int):
+        """DSA C-MOVE 拉取完成"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(success)
+        self.status_bar.showMessage(f"DSA 拉取完成: {success}/{total}")
 
     def _on_viewer_load_progress(self, current: int, total: int):
         """DSA 查看器加载图像进度"""

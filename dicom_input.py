@@ -222,6 +222,8 @@ class DicomInputSignals(QObject):
     local_load_progress = Signal(int, int)
     # 本地载入完成（参数：成功加载的文件数）
     local_load_finished = Signal(int)
+    # SCP 接收文件计数（参数：已接收文件总数）
+    scp_file_received = Signal(int)
     # 通用错误信息
     error_occurred = Signal(str)
 
@@ -257,6 +259,7 @@ class DicomSCP(QObject):
         self._ae: Optional[AE] = None
         self._server = None  # pynetdicom 的 server 对象
         self._running = False
+        self._received_count = 0  # 已接收文件计数
 
     # ---------- 公共接口 ----------
 
@@ -282,6 +285,7 @@ class DicomSCP(QObject):
             # 启动监听（非阻塞模式，通过 block=False 获取 server 对象）
             self._server = self._ae.start_server(("0.0.0.0", self.port), block=False, evt_handlers=handlers)
             self._running = True
+            self._received_count = 0
 
             msg = f"SCP 已启动 - AE Title: [{self.ae_title}], 端口: {self.port}, 临时目录: {self.temp_dir}"
             logger.info(msg)
@@ -349,6 +353,10 @@ class DicomSCP(QObject):
 
             # 通知 UI 有新数据到达
             self.signals.study_received.emit(study_uid, str(patient_name))
+
+            # 更新接收计数
+            self._received_count += 1
+            self.signals.scp_file_received.emit(self._received_count)
 
             # 返回成功状态
             return 0x0000

@@ -541,6 +541,10 @@ class ApplicationController(QObject):
         self.input_mgr.signals.error_occurred.connect(
             self.window.input_signals.error_occurred
         )
+        # SCP 接收文件计数 → 进度条
+        self.input_mgr.signals.scp_file_received.connect(
+            self.window.input_signals.scp_file_received
+        )
 
         # ===== 网络模块 → UI =====
         self.network_mgr.signals.find_results_ready.connect(
