@@ -3028,8 +3028,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _get_temp_dir() -> str:
-        """获取临时目录路径"""
-        base = os.path.join(os.getcwd(), "temp_dicom")
+        """获取临时目录路径（使用用户本地AppData，避免Program Files权限问题）"""
+        base = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "DICOM_MIX_Tools", "temp_dicom")
         os.makedirs(base, exist_ok=True)
         return base
 
