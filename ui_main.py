@@ -863,6 +863,15 @@ class DsaQueryDialog(QDialog):
         self.lbl_status.setStyleSheet("color: #666; font-size: 12px;")
         layout.addWidget(self.lbl_status)
 
+        # 进度条（C-MOVE 拉取时显示）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximum(0)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
         # 按钮行
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -946,11 +955,22 @@ class DsaQueryDialog(QDialog):
             )
             return
         self.lbl_status.setText(f"正在从 DSA 拉取检查 {self._selected_study_uid}...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(0)
         self.btn_move.setEnabled(False)
         self.request_move.emit(self._selected_study_uid, self.scp_ae_title, dsa_index)
 
+    def on_move_progress(self, current: int, total: int):
+        """C-MOVE 拉取进度"""
+        self.progress_bar.setVisible(True)
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+        self.lbl_status.setText(f"正在从 DSA 拉取: {current}/{total}")
+
     def on_move_finished(self, success: int, total: int):
         """拉取完成"""
+        self.progress_bar.setVisible(False)
         self.btn_move.setEnabled(True)
         self.lbl_status.setText(f"DSA 拉取完成: 成功 {success}/{total}")
         QMessageBox.information(self, "DSA 拉取完成", f"从 DSA 工作站拉取完成\n成功: {success} / 总计: {total}")
@@ -1011,6 +1031,8 @@ class HelpDialog(QDialog):
         <li><b>图像接收</b>：内置 DICOM SCP 服务端，可接收 DSA 设备推送的图像</li>
         <li><b>本地导入</b>：批量导入本地 DICOM 文件夹</li>
         <li><b>DSA 查看器</b>：多帧图像浏览、实时减影、窗宽窗位调节、循环播放</li>
+        <li><b>图像序列导出</b>：支持将当前序列导出为 MP4 视频或 PNG 图片序列</li>
+        <li><b>序列快速切换</b>：查看器内一键切换前后序列，自动管理勾选状态</li>
         <li><b>患者信息编辑</b>：修改患者姓名、ID、性别、年龄、出生日期、检查号等</li>
         <li><b>UID 重置</b>：自动重新生成 Study/Series/SOP Instance UID</li>
         <li><b>主机查询与发送</b>：C-FIND 查询、C-STORE 发送</li>
@@ -1056,7 +1078,22 @@ class HelpDialog(QDialog):
         <li><b>鼠标中键拖拽</b>：调节窗宽窗位（水平=窗宽，垂直=窗位）</li>
         <li><b>播放按钮</b>：自动循环播放当前序列</li>
         <li><b>◀ / ▶ 按钮</b>：手动逐帧前进/后退</li>
+        <li><b>⏮ / ⏭ 按钮（右侧面板「播放」组）</b>：快速切换同一检查下的前后序列</li>
         </ul>
+
+        <h4>5. 图像序列导出</h4>
+        <ol>
+        <li>在查看器中加载目标序列</li>
+        <li>点击播放控制栏的 <b>导出</b> 按钮</li>
+        <li>在弹窗中选择导出格式：
+            <ul>
+            <li><b>MP4</b>：设置输出帧率，选择保存路径</li>
+            <li><b>PNG 序列</b>：设置输出文件夹和文件名前缀，每帧保存为独立 PNG 文件</li>
+            </ul>
+        </li>
+        <li>点击 <b>确定</b>，等待导出完成</li>
+        </ol>
+        <p><b>注意</b>：导出图像会应用当前的窗宽窗位和减影设置。</p>
 
         <h4>5. DSA 减影</h4>
         <ol>
@@ -1108,12 +1145,20 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("关于 DICOM MIX Tools")
-        self.setMinimumSize(480, 360)
-        self.resize(520, 400)
+        self.setMinimumSize(480, 480)
+        self.resize(520, 520)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
+
+        # LOGO
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignCenter)
+        logo_pixmap = self._load_logo()
+        if logo_pixmap:
+            logo_label.setPixmap(logo_pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addWidget(logo_label)
 
         # 标题
         title = QLabel("DICOM MIX Tools")
@@ -1137,17 +1182,40 @@ class AboutDialog(QDialog):
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
+        # 功能简介
+        features = QLabel(
+            "<b>主要功能</b><br>"
+            "• DICOM SCP 接收 · 本地导入 · 主机/DSA 查询拉取<br>"
+            "• 多帧 DSA 查看器（减影、窗宽窗位、循环播放）<br>"
+            "• 图像序列导出（MP4 / PNG）<br>"
+            "• 患者信息编辑 · UID 重置 · C-STORE 发送<br>"
+            "• 私有标签保护 · 多 DSA 节点管理"
+        )
+        features.setStyleSheet("font-size: 12px; color: #4b5563; line-height: 1.7;")
+        features.setAlignment(Qt.AlignCenter)
+        features.setWordWrap(True)
+        layout.addWidget(features)
+
+        layout.addStretch()
+
+        # 联系方式
+        contact = QLabel(
+            "<b>联系方式</b><br>"
+            "邮箱: lbmzjz@outlook.com<br>"
+            "微信: lbmzjz"
+        )
+        contact.setStyleSheet("font-size: 12px; color: #6b7280; line-height: 1.6;")
+        contact.setAlignment(Qt.AlignCenter)
+        layout.addWidget(contact)
+
         # 技术栈
         tech = QLabel(
-            "技术栈：PySide6 · pydicom · pynetdicom · numpy · opencv-python\n"
-            "许可证：MIT License"
+            "技术栈：PySide6 · pydicom · pynetdicom · numpy · opencv-python&nbsp;&nbsp;|&nbsp;&nbsp;MIT License"
         )
-        tech.setStyleSheet("font-size: 12px; color: #9ca3af; line-height: 1.6;")
+        tech.setStyleSheet("font-size: 11px; color: #9ca3af;")
         tech.setAlignment(Qt.AlignCenter)
         tech.setWordWrap(True)
         layout.addWidget(tech)
-
-        layout.addStretch()
 
         # 关闭按钮
         btn_close = QPushButton("关闭")
@@ -1157,6 +1225,23 @@ class AboutDialog(QDialog):
         btn_layout.addStretch()
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
+
+    @staticmethod
+    def _load_logo():
+        """尝试加载 LOGO 图片"""
+        import os, sys
+        from PySide6.QtGui import QPixmap
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "assets", "logo.ico"),
+            os.path.join(os.path.dirname(sys.executable), "assets", "logo.ico"),
+            os.path.join(os.path.dirname(sys.executable), "_internal", "assets", "logo.ico"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                pix = QPixmap(path)
+                if not pix.isNull():
+                    return pix
+        return None
 
 
 # ------------------------------------------------------------------------------
@@ -2245,61 +2330,83 @@ class MainWindow(QMainWindow):
         # 注意：实际刷新树模型应由外部逻辑调用 add_study，这里仅做状态提示
 
     def _on_show_pacs_query(self):
-        """显示主机查询弹窗"""
+        """显示主机查询弹窗（非模态，不阻塞主窗口）"""
+        if hasattr(self, '_pacs_query_dialog') and self._pacs_query_dialog:
+            self._pacs_query_dialog.raise_()
+            self._pacs_query_dialog.activateWindow()
+            return
+
         scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
         dialog = PacsQueryDialog(scp_ae, self)
+        self._pacs_query_dialog = dialog
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.request_find.connect(self.request_pacs_find.emit)
         dialog.request_move.connect(self.request_pacs_move.emit)
         self.network_signals.find_results_ready.connect(dialog.on_results_ready)
         self.network_signals.pacs_move_progress.connect(dialog.on_move_progress)
         self.network_signals.pacs_move_finished.connect(dialog.on_move_finished)
 
-        if dialog.exec() == QDialog.Accepted and dialog.selected_data:
-            self._pacs_selected_data = dialog.selected_data
-            self._update_target_summary(dialog.selected_data)
-            # 切换到手动输入 Tab 并清空手动输入框，避免混淆
-            self.tab_widget.setCurrentIndex(0)
-            self.edit_manual_name.clear()
-            self.edit_manual_id.clear()
-            self.edit_manual_acc.clear()
-            self.status_bar.showMessage(
-                f"已选择目标患者: {dialog.selected_data['patient_name']}"
-            )
-        else:
-            # 弹窗取消时不清除之前的选择
-            pass
+        def _on_pacs_accepted():
+            if dialog.selected_data:
+                self._pacs_selected_data = dialog.selected_data
+                self._update_target_summary(dialog.selected_data)
+                self.tab_widget.setCurrentIndex(0)
+                self.edit_manual_name.clear()
+                self.edit_manual_id.clear()
+                self.edit_manual_acc.clear()
+                self.status_bar.showMessage(
+                    f"已选择目标患者: {dialog.selected_data['patient_name']}"
+                )
 
-        # 断开临时信号连接
-        for sig, slot in [
-            (self.network_signals.find_results_ready, dialog.on_results_ready),
-            (self.network_signals.pacs_move_progress, dialog.on_move_progress),
-            (self.network_signals.pacs_move_finished, dialog.on_move_finished),
-        ]:
-            try:
-                sig.disconnect(slot)
-            except (TypeError, RuntimeError):
-                pass
+        def _on_pacs_finished():
+            # 断开临时信号连接
+            for sig, slot in [
+                (self.network_signals.find_results_ready, dialog.on_results_ready),
+                (self.network_signals.pacs_move_progress, dialog.on_move_progress),
+                (self.network_signals.pacs_move_finished, dialog.on_move_finished),
+            ]:
+                try:
+                    sig.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            self._pacs_query_dialog = None
+
+        dialog.accepted.connect(_on_pacs_accepted)
+        dialog.finished.connect(_on_pacs_finished)
+        dialog.show()
 
     def _on_show_dsa_query(self):
-        """显示 DSA 查询弹窗"""
+        """显示 DSA 查询弹窗（非模态，不阻塞主窗口）"""
+        if hasattr(self, '_dsa_query_dialog') and self._dsa_query_dialog:
+            self._dsa_query_dialog.raise_()
+            self._dsa_query_dialog.activateWindow()
+            return
+
         scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
         dialog = DsaQueryDialog(self._dsa_nodes, scp_ae, self._scp_running, self)
+        self._dsa_query_dialog = dialog
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.request_find.connect(self.request_dsa_find.emit)
         dialog.request_move.connect(self.request_dsa_move.emit)
         self.network_signals.dsa_find_results_ready.connect(dialog.on_find_results)
+        self.network_signals.dsa_move_progress.connect(dialog.on_move_progress)
         self.network_signals.dsa_move_finished.connect(dialog.on_move_finished)
 
-        dialog.exec()
+        def _on_dsa_finished():
+            # 断开临时信号连接
+            for signal, slot in [
+                (self.network_signals.dsa_find_results_ready, dialog.on_find_results),
+                (self.network_signals.dsa_move_progress, dialog.on_move_progress),
+                (self.network_signals.dsa_move_finished, dialog.on_move_finished),
+            ]:
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            self._dsa_query_dialog = None
 
-        # 断开临时信号连接
-        for signal, slot in [
-            (self.network_signals.dsa_find_results_ready, dialog.on_find_results),
-            (self.network_signals.dsa_move_finished, dialog.on_move_finished),
-        ]:
-            try:
-                signal.disconnect(slot)
-            except (TypeError, RuntimeError):
-                pass
+        dialog.finished.connect(_on_dsa_finished)
+        dialog.show()
 
     def _on_show_help(self):
         """显示帮助文档弹窗"""

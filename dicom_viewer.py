@@ -343,34 +343,6 @@ class DSAViewerWidget(QWidget):
         self.btn_export.clicked.connect(self.export_requested.emit)
         hbox.addWidget(self.btn_export)
 
-        # 序列导航分隔线
-        sep2 = QWidget()
-        sep2.setFixedSize(1, 20)
-        sep2.setStyleSheet("background-color: rgba(255,255,255,60);")
-        hbox.addWidget(sep2)
-
-        # 上一序列按钮
-        self.btn_prev_series = QPushButton("⏮")
-        self.btn_prev_series.setObjectName("playBtn")
-        self.btn_prev_series.setFixedSize(32, 32)
-        self.btn_prev_series.setToolTip("上一序列")
-        self.btn_prev_series.setCursor(QCursor(Qt.PointingHandCursor))
-        self.btn_prev_series.setFocusPolicy(Qt.NoFocus)
-        self.btn_prev_series.setFlat(True)
-        self.btn_prev_series.clicked.connect(self.prev_series_requested.emit)
-        hbox.addWidget(self.btn_prev_series)
-
-        # 下一序列按钮
-        self.btn_next_series = QPushButton("⏭")
-        self.btn_next_series.setObjectName("playBtn")
-        self.btn_next_series.setFixedSize(32, 32)
-        self.btn_next_series.setToolTip("下一序列")
-        self.btn_next_series.setCursor(QCursor(Qt.PointingHandCursor))
-        self.btn_next_series.setFocusPolicy(Qt.NoFocus)
-        self.btn_next_series.setFlat(True)
-        self.btn_next_series.clicked.connect(self.next_series_requested.emit)
-        hbox.addWidget(self.btn_next_series)
-
         # 帧滑块
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setRange(0, 0)
@@ -508,6 +480,22 @@ class DSAViewerWidget(QWidget):
         fps_row.addStretch()
         b3.addLayout(fps_row)
 
+        # 序列导航按钮
+        nav_row = QHBoxLayout()
+        self.btn_prev_series = QPushButton("⏮ 上一序列")
+        self.btn_prev_series.setObjectName("secondary")
+        self.btn_prev_series.setToolTip("切换到上一序列（自动取消勾选当前序列）")
+        self.btn_prev_series.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_prev_series.clicked.connect(self.prev_series_requested.emit)
+        nav_row.addWidget(self.btn_prev_series)
+        self.btn_next_series = QPushButton("下一序列 ⏭")
+        self.btn_next_series.setObjectName("secondary")
+        self.btn_next_series.setToolTip("切换到下一序列（自动勾选新序列）")
+        self.btn_next_series.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_next_series.clicked.connect(self.next_series_requested.emit)
+        nav_row.addWidget(self.btn_next_series)
+        b3.addLayout(nav_row)
+
         zoom_hint = QLabel("💡 滚轮缩放图像")
         zoom_hint.setStyleSheet("color: #6b7280; font-size: 11px; padding: 2px;")
         b3.addWidget(zoom_hint)
@@ -519,9 +507,10 @@ class DSAViewerWidget(QWidget):
     # ---------- 尺寸与比例（手动布局） ----------
 
     def resizeEvent(self, event):
-        """窗口尺寸变化时重新计算 4:3 图像区与悬浮控制条位置。"""
+        """窗口尺寸变化时重新计算图像区与悬浮控制条位置。"""
         super().resizeEvent(event)
-        self._layout_image_area()
+        # 延迟一帧执行，确保 QHBoxLayout 已完成子控件尺寸分配
+        QTimer.singleShot(0, self._layout_image_area)
 
     def _layout_image_area(self):
         """image_panel 填满可用空间，内部控件填满/悬浮，图像自适应居中。"""
