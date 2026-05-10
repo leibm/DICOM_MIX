@@ -24,6 +24,14 @@ EXCLUDE_MODULES = [
     "setuptools", "pip", "wheel", "pkg_resources",
     "requests",
     "logging.config", "logging.handlers",
+    # 大型开发/文档库（程序运行时不需要）
+    "babel", "sphinx", "jedi", "docutils", "pygments",
+    "IPython", "ipykernel", "jupyter_client", "jupyter_core",
+    "tornado", "zmq", "pyzmq",
+    "black", "mypy", "packaging",
+    "platformdirs", "appdirs",
+    "psutil", "paramiko", "nacl", "bcrypt",
+    "cryptography.hazmat.backends.openssl",
     # Qt 多余模块
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput",
     "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation", "PySide6.Qt3DExtras",
@@ -215,6 +223,31 @@ def clean_dist_extras():
     # 删除 Python 标准库的测试文件
     for pattern in ["lib2to3", "ensurepip", "idlelib", "distutils", "tkinter", "tcl", "turtledemo"]:
         d = os.path.join(dist_dir, pattern)
+        if os.path.isdir(d):
+            for root, _, files in os.walk(d):
+                for f in files:
+                    removed_size += os.path.getsize(os.path.join(root, f))
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+
+    # 删除大型开发/文档库（程序运行时不需要）
+    for sub in ["babel", "sphinx", "jedi", "docutils", "pygments",
+                "IPython", "ipykernel", "jupyter_client", "jupyter_core",
+                "tornado", "zmq", "black", "mypy",
+                "packaging", "platformdirs", "appdirs",
+                "psutil", "paramiko", "nacl", "bcrypt",
+                "jsonschema", "nbformat", "nbclient", "nbconvert",
+                "dateutil", "pytz", "yaml", "traitlets",
+                "wcwidth", "prompt_toolkit", "pexpect", "ptyprocess",
+                "_pytest", "pytest", "py",
+                "cffi", "pycparser", "greenlet",
+                "zipp", "importlib_metadata", "importlib_resources",
+                "typing_extensions", "filelock", "pathspec",
+                "click", "itsdangerous", "MarkupSafe", "Jinja2",
+                " soupsieve", "beautifulsoup4", "html5lib",
+                "parso", "jedi", "colorama", "isort", "tomli",
+                " Send2Trash", "terminado", "argon2", "async_lru"]:
+        d = os.path.join(dist_dir, sub.strip())
         if os.path.isdir(d):
             for root, _, files in os.walk(d):
                 for f in files:
