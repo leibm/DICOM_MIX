@@ -482,14 +482,36 @@ class DSAViewerWidget(QWidget):
 
         # 序列导航按钮
         nav_row = QHBoxLayout()
-        self.btn_prev_series = QPushButton("⏮ 上一序列")
-        self.btn_prev_series.setObjectName("secondary")
+        self.btn_prev_series = QPushButton("◀ 上一序列")
+        self.btn_prev_series.setMinimumHeight(32)
+        self.btn_prev_series.setStyleSheet("""
+            QPushButton {
+                font-size: 12px; font-weight: 500;
+                padding: 4px 10px;
+                border: 1px solid #d1d5db; border-radius: 6px;
+                background-color: #f9fafb; color: #374151;
+            }
+            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+            QPushButton:pressed { background-color: #e5e7eb; }
+            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+        """)
         self.btn_prev_series.setToolTip("切换到上一序列（自动取消勾选当前序列）")
         self.btn_prev_series.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_prev_series.clicked.connect(self.prev_series_requested.emit)
         nav_row.addWidget(self.btn_prev_series)
-        self.btn_next_series = QPushButton("下一序列 ⏭")
-        self.btn_next_series.setObjectName("secondary")
+        self.btn_next_series = QPushButton("下一序列 ▶")
+        self.btn_next_series.setMinimumHeight(32)
+        self.btn_next_series.setStyleSheet("""
+            QPushButton {
+                font-size: 12px; font-weight: 500;
+                padding: 4px 10px;
+                border: 1px solid #d1d5db; border-radius: 6px;
+                background-color: #f9fafb; color: #374151;
+            }
+            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+            QPushButton:pressed { background-color: #e5e7eb; }
+            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+        """)
         self.btn_next_series.setToolTip("切换到下一序列（自动勾选新序列）")
         self.btn_next_series.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_next_series.clicked.connect(self.next_series_requested.emit)

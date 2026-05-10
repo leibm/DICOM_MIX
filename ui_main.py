@@ -401,9 +401,10 @@ class PacsQueryDialog(QDialog):
     request_find = Signal(dict)   # 发出查询请求
     request_move = Signal(str, str)  # (study_uid, move_dest_ae)
 
-    def __init__(self, scp_ae_title: str = "MIX_SCP", parent=None):
+    def __init__(self, scp_ae_title: str = "MIX_SCP", scp_running: bool = False, parent=None):
         super().__init__(parent)
         self.scp_ae_title = scp_ae_title
+        self.scp_running = scp_running
         self.setWindowTitle("查询主机")
         self.setMinimumSize(800, 500)
         self.selected_data = None
@@ -496,7 +497,7 @@ class PacsQueryDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先在表格中选择一个检查")
             return
         self.btn_move.setEnabled(False)
-        self.lbl_selected.setText("准备拉取...")
+        self.show_move_progress()
         self.request_move.emit(self._selected_study_uid, self.scp_ae_title)
 
     def show_move_progress(self):
@@ -519,6 +520,64 @@ class PacsQueryDialog(QDialog):
         self.btn_move.setEnabled(True)
         self.lbl_selected.setText(f"主机拉取完成: 成功 {success}/{total}")
         QMessageBox.information(self, "拉取完成", f"从主机拉取完成\n成功: {success} / 总计: {total}")
+
+    def set_scp_running(self, running: bool, ae_title: str = None):
+        """SCP 状态变化时实时更新拉取按钮可用性"""
+        self.scp_running = running
+        if ae_title:
+            self.scp_ae_title = ae_title
+        # 拉取按钮的可用性受选中状态和 SCP 状态双重控制
+        if self._selected_study_uid and self.scp_running:
+            self.btn_move.setEnabled(True)
+        else:
+            self.btn_move.setEnabled(False)
+
+    def get_state(self) -> dict:
+        """获取当前状态（用于关闭后恢复）"""
+        results = []
+        for row in range(self.result_model.rowCount()):
+            results.append(self.result_model.get_selected_data(row))
+        return {
+            "results": results,
+            "patient_name": self.edit_find_name.text(),
+            "patient_id": self.edit_find_id.text(),
+            "accession_number": self.edit_find_acc.text(),
+            "date_filter_idx": self.combo_date_filter.currentIndex(),
+            "selected_data": self.selected_data,
+            "selected_uid": self._selected_study_uid,
+            "status_text": self.lbl_selected.text(),
+        }
+
+    def restore_state(self, state: dict):
+        """恢复上次的状态"""
+        if not state:
+            return
+        self.edit_find_name.setText(state.get("patient_name", ""))
+        self.edit_find_id.setText(state.get("patient_id", ""))
+        self.edit_find_acc.setText(state.get("accession_number", ""))
+        idx = state.get("date_filter_idx", 0)
+        if 0 <= idx < self.combo_date_filter.count():
+            self.combo_date_filter.setCurrentIndex(idx)
+        # 恢复结果
+        self.result_model.clear()
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        for r in state.get("results", []):
+            self.result_model.add_result(r)
+        # 恢复选中
+        self.selected_data = state.get("selected_data")
+        self._selected_study_uid = state.get("selected_uid", "")
+        if self.selected_data:
+            self.btn_ok.setEnabled(True)
+            self.lbl_selected.setText(
+                f"已选择: {self.selected_data.get('patient_name', '')} | "
+                f"ID: {self.selected_data.get('patient_id', '')} | "
+                f"Acc: {self.selected_data.get('accession_number', '')}"
+            )
+            self.btn_move.setEnabled(True)
+        elif self._selected_study_uid:
+            self.lbl_selected.setText(state.get("status_text", "未选择目标患者"))
+        else:
+            self.lbl_selected.setText("未选择目标患者")
 
     def _on_find(self):
         """点击查询按钮"""
@@ -975,6 +1034,80 @@ class DsaQueryDialog(QDialog):
         self.lbl_status.setText(f"DSA 拉取完成: 成功 {success}/{total}")
         QMessageBox.information(self, "DSA 拉取完成", f"从 DSA 工作站拉取完成\n成功: {success} / 总计: {total}")
 
+    def set_scp_running(self, running: bool, ae_title: str = None):
+        """SCP 状态变化时实时更新提示"""
+        self.scp_running = running
+        if ae_title:
+            self.scp_ae_title = ae_title
+        if not self.scp_running:
+            self.lbl_scp_status.setText("⚠️ SCP 服务未启动，无法拉取图像。请先启动 SCP 接收端。")
+            self.lbl_scp_status.setStyleSheet(
+                "background-color: #fef3c7; color: #92400e; padding: 8px 12px;"
+                "border-radius: 6px; font-size: 13px; font-weight: 500;"
+            )
+        else:
+            self.lbl_scp_status.setText(f"✅ SCP 运行中 ({self.scp_ae_title})，可以拉取图像")
+            self.lbl_scp_status.setStyleSheet(
+                "background-color: #d1fae5; color: #065f46; padding: 8px 12px;"
+                "border-radius: 6px; font-size: 13px; font-weight: 500;"
+            )
+
+    def get_state(self) -> dict:
+        """获取当前状态（用于关闭后恢复）"""
+        results = []
+        for row in range(self.result_model.rowCount()):
+            results.append({
+                "patient_name": self.result_model.item(row, 0).text(),
+                "patient_id": self.result_model.item(row, 1).text(),
+                "accession_number": self.result_model.item(row, 2).text(),
+                "study_date": self.result_model.item(row, 3).text(),
+                "study_instance_uid": self.result_model.item(row, 4).text(),
+            })
+        return {
+            "results": results,
+            "date_filter_idx": self.combo_date_filter.currentIndex(),
+            "selected_uid": self._selected_study_uid,
+            "dsa_index": self.combo_dsa.currentIndex(),
+            "status_text": self.lbl_status.text(),
+        }
+
+    def restore_state(self, state: dict):
+        """恢复上次的状态"""
+        if not state:
+            return
+        # 恢复日期筛选
+        idx = state.get("date_filter_idx", 0)
+        if 0 <= idx < self.combo_date_filter.count():
+            self.combo_date_filter.setCurrentIndex(idx)
+        # 恢复 DSA 节点选择
+        dsa_idx = state.get("dsa_index", 0)
+        if 0 <= dsa_idx < self.combo_dsa.count():
+            self.combo_dsa.setCurrentIndex(dsa_idx)
+        # 恢复查询结果
+        self.result_model.removeRows(0, self.result_model.rowCount())
+        for r in state.get("results", []):
+            row = [
+                QStandardItem(r.get("patient_name", "")),
+                QStandardItem(r.get("patient_id", "")),
+                QStandardItem(r.get("accession_number", "")),
+                QStandardItem(r.get("study_date", "")),
+                QStandardItem(r.get("study_instance_uid", "")),
+            ]
+            for item in row:
+                item.setEditable(False)
+            self.result_model.appendRow(row)
+        # 恢复选中
+        uid = state.get("selected_uid", "")
+        if uid:
+            for row in range(self.result_model.rowCount()):
+                if self.result_model.item(row, 4).text() == uid:
+                    self.result_table.selectRow(row)
+                    self._selected_study_uid = uid
+                    self.btn_move.setEnabled(True)
+                    break
+        # 恢复状态文本
+        self.lbl_status.setText(state.get("status_text", ""))
+
 
 class HelpDialog(QDialog):
     """帮助文档弹窗"""
@@ -1133,7 +1266,10 @@ class HelpDialog(QDialog):
         <li><b>右键图像</b>：设置减影蒙版帧</li>
         </ul>
 
-        <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">内部工具，仅供医疗影像工作站使用。</p>
+        <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
+        如有问题请联系：邮箱 lbmzjz@outlook.com / 微信 lbmzjz<br>
+        内部工具，仅供医疗影像工作站使用。
+        </p>
         </body>
         </html>
         """
@@ -2259,6 +2395,12 @@ class MainWindow(QMainWindow):
         self.btn_scp_toggle.setChecked(running)
         self.btn_scp_toggle.setText("停止 SCP 接收" if running else "启动 SCP 接收")
         self.status_bar.showMessage(message)
+        # 实时同步到已打开的查询弹窗
+        scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
+        if hasattr(self, '_dsa_query_dialog') and self._dsa_query_dialog:
+            self._dsa_query_dialog.set_scp_running(running, scp_ae)
+        if hasattr(self, '_pacs_query_dialog') and self._pacs_query_dialog:
+            self._pacs_query_dialog.set_scp_running(running, scp_ae)
 
     def _on_load_local(self):
         """弹出文件夹选择对话框，请求加载本地 DICOM 文件夹"""
@@ -2337,7 +2479,7 @@ class MainWindow(QMainWindow):
             return
 
         scp_ae = self.edit_scp_ae_title.text().strip() if hasattr(self, 'edit_scp_ae_title') else "MIX_SCP"
-        dialog = PacsQueryDialog(scp_ae, self)
+        dialog = PacsQueryDialog(scp_ae, self._scp_running, self)
         self._pacs_query_dialog = dialog
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.request_find.connect(self.request_pacs_find.emit)
@@ -2345,6 +2487,10 @@ class MainWindow(QMainWindow):
         self.network_signals.find_results_ready.connect(dialog.on_results_ready)
         self.network_signals.pacs_move_progress.connect(dialog.on_move_progress)
         self.network_signals.pacs_move_finished.connect(dialog.on_move_finished)
+
+        # 恢复上次状态
+        if hasattr(self, '_pacs_query_state') and self._pacs_query_state:
+            dialog.restore_state(self._pacs_query_state)
 
         def _on_pacs_accepted():
             if dialog.selected_data:
@@ -2359,6 +2505,8 @@ class MainWindow(QMainWindow):
                 )
 
         def _on_pacs_finished():
+            # 保存状态
+            self._pacs_query_state = dialog.get_state()
             # 断开临时信号连接
             for sig, slot in [
                 (self.network_signals.find_results_ready, dialog.on_results_ready),
@@ -2392,7 +2540,13 @@ class MainWindow(QMainWindow):
         self.network_signals.dsa_move_progress.connect(dialog.on_move_progress)
         self.network_signals.dsa_move_finished.connect(dialog.on_move_finished)
 
+        # 恢复上次状态
+        if hasattr(self, '_dsa_query_state') and self._dsa_query_state:
+            dialog.restore_state(self._dsa_query_state)
+
         def _on_dsa_finished():
+            # 保存状态
+            self._dsa_query_state = dialog.get_state()
             # 断开临时信号连接
             for signal, slot in [
                 (self.network_signals.dsa_find_results_ready, dialog.on_find_results),

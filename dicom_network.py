@@ -422,10 +422,14 @@ class CMoveWorker(QObject):
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
                         total_ops = completed + remaining
+                        # 即使远端不返回 remaining，只要有 completed 就更新计数
+                        max_completed = max(max_completed, completed)
                         if total_ops > 0:
-                            max_completed = max(max_completed, completed)
                             max_total = max(max_total, total_ops)
-                        self.progress.emit(completed, total_ops)
+                        elif completed > 0:
+                            # 远端不返回 remaining 时，用 completed 作为总数估计
+                            max_total = max(max_total, completed)
+                        self.progress.emit(completed, max(total_ops, 1))
                 elif status.Status in (0x0000, 0xB000):
                     # 0x0000 = 成功完成, 0xB000 = 完成但有部分警告
                     final_found = True
@@ -433,13 +437,15 @@ class CMoveWorker(QObject):
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
                         total_ops = completed + failed
+                        max_completed = max(max_completed, completed)
                         if total_ops > 0:
-                            max_completed = max(max_completed, completed)
                             max_total = max(max_total, total_ops)
-                        self.finished.emit(max_completed, max(max_total, 1))
+                        elif completed > 0:
+                            max_total = max(max_total, completed)
+                        self.finished.emit(max_completed, max(max_total, max_completed, 1))
                     else:
                         # 最终响应通常不带 identifier，使用跟踪的最大值
-                        self.finished.emit(max_completed, max(max_total, 1))
+                        self.finished.emit(max_completed, max(max_total, max_completed, 1))
                     break
                 elif status.Status == 0xFF01:
                     # Pending with warning，忽略
