@@ -169,6 +169,7 @@ class DSAViewerWidget(QWidget):
     """
 
     mask_frame_changed = Signal(int)
+    export_requested = Signal()  # 用户点击导出按钮
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -309,6 +310,35 @@ class DSAViewerWidget(QWidget):
         self.btn_next.setFlat(True)
         self.btn_next.clicked.connect(self._on_next_frame_click)
         hbox.addWidget(self.btn_next)
+
+        # 分隔线
+        sep = QWidget()
+        sep.setFixedSize(1, 20)
+        sep.setStyleSheet("background-color: rgba(255,255,255,60);")
+        hbox.addWidget(sep)
+
+        # 导出按钮
+        self.btn_export = QPushButton("导出")
+        self.btn_export.setObjectName("playBtn")
+        self.btn_export.setFixedSize(48, 28)
+        self.btn_export.setToolTip("导出为 MP4 视频或 PNG 图片")
+        self.btn_export.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_export.setFocusPolicy(Qt.NoFocus)
+        self.btn_export.setFlat(True)
+        self.btn_export.setStyleSheet("""
+            QPushButton {
+                color: rgba(255,255,255,200);
+                font-size: 11px;
+                border: 1px solid rgba(255,255,255,40);
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255,255,255,30);
+            }
+        """)
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_requested.emit)
+        hbox.addWidget(self.btn_export)
 
         # 帧滑块
         self.frame_slider = QSlider(Qt.Horizontal)
@@ -564,6 +594,7 @@ class DSAViewerWidget(QWidget):
         self.frame_slider.setRange(0, max(0, self._total_frames - 1))
         self.frame_slider.setValue(0)
         self.frame_slider.setEnabled(self._total_frames > 1)
+        self.btn_export.setEnabled(self._total_frames > 0)
         self.lbl_frame.setText(f"1 / {self._total_frames}")
 
         self.update_display()
@@ -578,6 +609,7 @@ class DSAViewerWidget(QWidget):
         self._raw_frames = []
         self._total_frames = 0
         self._current_idx = 0
+        self.btn_export.setEnabled(False)
         self.pixmap_item.setPixmap(QPixmap())
         self.scene.setSceneRect(0, 0, 0, 0)
         gc.collect()
@@ -839,3 +871,19 @@ class DSAViewerWidget(QWidget):
     @property
     def total_frames(self) -> int:
         return self._total_frames
+
+    @property
+    def frame_size(self) -> tuple:
+        """返回帧尺寸 (width, height)。无帧时返回 (0, 0)。"""
+        if self._raw_frames:
+            h, w = self._raw_frames[0].shape[:2]
+            return (w, h)
+        return (0, 0)
+
+    def get_export_frames(self):
+        """生成器：逐帧输出 uint8 灰度图，应用当前窗宽窗位和减影设置。"""
+        for i in range(self._total_frames):
+            raw = self._raw_frames[i]
+            if self._subtraction_enabled:
+                raw = self._compute_subtraction(raw, self._raw_frames[self._mask_idx])
+            yield self._apply_window(raw)

@@ -502,6 +502,141 @@ class PacsQueryDialog(QDialog):
             self.result_model.add_result(r)
 
 
+class ExportDialog(QDialog):
+    """图像序列导出对话框"""
+
+    request_export = Signal(str, dict)  # (format, params)
+
+    def __init__(self, total_frames: int, frame_size: tuple, fps: int = 15, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("导出图像序列")
+        self.setMinimumWidth(420)
+        self._total_frames = total_frames
+        self._frame_size = frame_size
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # 信息
+        info = QLabel(f"帧数: {total_frames}  |  尺寸: {frame_size[0]}x{frame_size[1]}")
+        info.setStyleSheet("color: #6b7280; font-size: 12px;")
+        layout.addWidget(info)
+
+        # 格式选择
+        g_format = QGroupBox("导出格式")
+        fmt_layout = QHBoxLayout(g_format)
+        self.radio_mp4 = QRadioButton("MP4 视频")
+        self.radio_mp4.setChecked(True)
+        self.radio_png = QRadioButton("PNG 图片序列")
+        fmt_layout.addWidget(self.radio_mp4)
+        fmt_layout.addWidget(self.radio_png)
+        layout.addWidget(g_format)
+
+        # MP4 选项
+        self.mp4_group = QGroupBox("MP4 设置")
+        mp4_form = QFormLayout(self.mp4_group)
+        mp4_form.setLabelAlignment(Qt.AlignRight)
+        self.spin_fps = QSpinBox()
+        self.spin_fps.setRange(1, 60)
+        self.spin_fps.setValue(fps)
+        self.spin_fps.installEventFilter(self)
+        self.spin_fps.setFocusPolicy(Qt.StrongFocus)
+        mp4_form.addRow("帧率 (FPS):", self.spin_fps)
+        layout.addWidget(self.mp4_group)
+
+        # PNG 选项
+        self.png_group = QGroupBox("PNG 设置")
+        png_form = QFormLayout(self.png_group)
+        png_form.setLabelAlignment(Qt.AlignRight)
+        self.edit_prefix = QLineEdit("frame_")
+        png_form.addRow("文件名前缀:", self.edit_prefix)
+        layout.addWidget(self.png_group)
+
+        # 初始状态：根据选中格式显示/隐藏
+        self.radio_mp4.toggled.connect(self._on_format_changed)
+        self._on_format_changed()
+
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, total_frames)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #6b7280; font-size: 12px;")
+        layout.addWidget(self.lbl_status)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_export = QPushButton("开始导出")
+        self.btn_export.setObjectName("success")
+        self.btn_export.clicked.connect(self._on_export)
+        btn_layout.addWidget(self.btn_export)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Wheel and obj is self.spin_fps:
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _on_format_changed(self):
+        is_mp4 = self.radio_mp4.isChecked()
+        self.mp4_group.setVisible(is_mp4)
+        self.png_group.setVisible(not is_mp4)
+
+    def _on_export(self):
+        fmt = "mp4" if self.radio_mp4.isChecked() else "png"
+        params = {}
+        if fmt == "mp4":
+            params["fps"] = self.spin_fps.value()
+        else:
+            params["prefix"] = self.edit_prefix.text().strip() or "frame_"
+
+        # 弹出保存路径选择
+        if fmt == "mp4":
+            path, _ = QFileDialog.getSaveFileName(
+                self, "保存 MP4 视频", "output.mp4",
+                "MP4 视频 (*.mp4)"
+            )
+        else:
+            path = QFileDialog.getExistingDirectory(
+                self, "选择 PNG 输出文件夹", "",
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+        if not path:
+            return
+
+        params["output_path"] = path
+        self.btn_export.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
+        self.lbl_status.setText("正在导出...")
+        self.request_export.emit(fmt, params)
+
+    def on_progress(self, current: int, total: int):
+        self.progress_bar.setValue(current)
+        self.lbl_status.setText(f"导出中... {current}/{total}")
+
+    def on_finished(self, message: str):
+        self.lbl_status.setText(message)
+        self.progress_bar.setValue(self._total_frames)
+        self.btn_export.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+        QMessageBox.information(self, "导出完成", message)
+        self.accept()
+
+    def on_error(self, message: str):
+        self.lbl_status.setText(f"错误: {message}")
+        self.btn_export.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+        QMessageBox.critical(self, "导出失败", message)
+
+
 class DsaNodeEditDialog(QDialog):
     """DSA 节点编辑弹窗（添加/修改）"""
 
@@ -904,6 +1039,7 @@ class MainWindow(QMainWindow):
     request_dsa_move = Signal(str, str, int)    # 请求 DSA C-MOVE (study_uid, move_dest_ae, dsa_index)
     show_pacs_query_requested = Signal()   # 请求显示主机查询弹窗
     show_dsa_query_requested = Signal()    # 请求显示 DSA 查询弹窗
+    request_export = Signal(str, dict)     # 请求导出 (format, params)
 
     def __init__(self):
         super().__init__()
@@ -1845,6 +1981,9 @@ class MainWindow(QMainWindow):
         # 左侧树勾选状态变化时更新底部目标摘要
         self.tree_model.dataChanged.connect(self._on_tree_check_changed)
 
+        # DSA 查看器导出按钮
+        self.dsa_viewer.export_requested.connect(self._on_show_export)
+
     # ---------- 槽函数 / 事件处理 ----------
 
     def _on_scp_toggle(self, checked: bool):
@@ -1939,6 +2078,28 @@ class MainWindow(QMainWindow):
         """显示帮助文档弹窗"""
         dialog = HelpDialog(self)
         dialog.exec()
+
+    def _on_show_export(self):
+        """显示导出对话框"""
+        viewer = self.dsa_viewer
+        if not viewer or viewer.total_frames == 0:
+            QMessageBox.warning(self, "提示", "当前没有加载图像序列")
+            return
+        dialog = ExportDialog(
+            total_frames=viewer.total_frames,
+            frame_size=viewer.frame_size,
+            fps=viewer._fps,
+            parent=self
+        )
+        # 连接导出请求信号到主窗口信号（由 main.py 处理实际导出）
+        dialog.request_export.connect(self.request_export.emit)
+        dialog.exec()
+
+        # 断开临时连接
+        try:
+            dialog.request_export.disconnect(self.request_export.emit)
+        except (TypeError, RuntimeError):
+            pass
 
     def _on_refresh_tree(self):
         """手动刷新左侧树（可由外部业务逻辑实现）"""

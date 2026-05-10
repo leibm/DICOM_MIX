@@ -16,5 +16,8 @@ PySide6-Fluent-Widgets>=1.11.0
 # Matrix operations (DSA subtraction algorithm)
 numpy>=1.21.0
 
+# Video/image export (MP4 encoding, PNG writing)
+opencv-python>=4.8.0
+
 # Packager (build Windows executable)
 pyinstaller>=5.0

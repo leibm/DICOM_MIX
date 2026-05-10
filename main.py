@@ -21,6 +21,9 @@ DICOM MIX Tools 的主入口，职责如下：
 
 import sys
 import os
+import logging
+
+logger = logging.getLogger("main")
 
 # 确保当前目录在模块搜索路径中（PyInstaller 打包后需要）
 if getattr(sys, 'frozen', False):
@@ -34,7 +37,7 @@ if application_dir not in sys.path:
     sys.path.insert(0, application_dir)
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, QThread, Signal
 
 # Fluent Design 主题
 from qfluentwidgets import setTheme, Theme, setThemeColor
@@ -371,7 +374,7 @@ QDockWidget::close-button:hover, QDockWidget::float-button:hover {
 """
 
 # 导入自定义模块
-from ui_main import MainWindow
+from ui_main import MainWindow, ExportDialog
 from dicom_input import DicomInputManager
 from dicom_network import DicomNetworkManager, PacsNodeConfig
 from dicom_processor import DicomProcessor
@@ -382,6 +385,62 @@ from config import (
     DEFAULT_DSA_AE_TITLE, DEFAULT_DSA_HOST, DEFAULT_DSA_PORT,
     DEFAULT_DSA_NODES,
 )
+
+
+# ------------------------------------------------------------------------------
+# 导出工作线程
+# ------------------------------------------------------------------------------
+
+class ExportWorker(QObject):
+    """在后台线程中将图像序列导出为 MP4 或 PNG。"""
+
+    progress = Signal(int, int)   # (当前帧, 总帧数)
+    finished = Signal(str)        # 完成消息
+    error = Signal(str)           # 错误消息
+
+    def __init__(self, frames_iter, fmt: str, params: dict, parent=None):
+        super().__init__(parent)
+        self._frames = list(frames_iter)  # 预先收集所有帧
+        self._fmt = fmt
+        self._params = params
+
+    def run(self):
+        try:
+            import cv2
+            total = len(self._frames)
+            if total == 0:
+                self.error.emit("没有可导出的帧")
+                return
+
+            h, w = self._frames[0].shape[:2]
+
+            if self._fmt == "mp4":
+                fps = self._params.get("fps", 15)
+                output_path = self._params["output_path"]
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h), isColor=False)
+                if not writer.isOpened():
+                    self.error.emit(f"无法创建视频文件: {output_path}")
+                    return
+                for i, frame in enumerate(self._frames):
+                    writer.write(frame)
+                    self.progress.emit(i + 1, total)
+                writer.release()
+                self.finished.emit(f"MP4 视频已导出\n{output_path}\n共 {total} 帧")
+
+            elif self._fmt == "png":
+                output_dir = self._params["output_path"]
+                prefix = self._params.get("prefix", "frame_")
+                for i, frame in enumerate(self._frames):
+                    fname = f"{prefix}{i:04d}.png"
+                    fpath = os.path.join(output_dir, fname)
+                    cv2.imwrite(fpath, frame)
+                    self.progress.emit(i + 1, total)
+                self.finished.emit(f"PNG 图片已导出到\n{output_dir}\n共 {total} 帧")
+
+        except Exception as e:
+            logger.exception("导出异常")
+            self.error.emit(f"导出异常: {e}")
 
 
 # ------------------------------------------------------------------------------
@@ -535,6 +594,9 @@ class ApplicationController(QObject):
         # DSA 请求（带 dsa_index 参数）
         self.window.request_dsa_find.connect(self._on_dsa_find)
         self.window.request_dsa_move.connect(self._on_dsa_move)
+
+        # 导出请求
+        self.window.request_export.connect(self._on_export)
 
         # 网络配置变更时重新初始化网络模块
         self.window.network_config_changed.connect(self._on_network_config_changed)
@@ -780,6 +842,50 @@ class ApplicationController(QObject):
                 signal.connect(slot)
 
             self.window.status_bar.showMessage("网络配置已更新并即时生效")
+
+    # ---------- 导出处理 ----------
+
+    def _on_export(self, fmt: str, params: dict):
+        """处理图像序列导出请求。"""
+        viewer = self.window.dsa_viewer
+        if not viewer or viewer.total_frames == 0:
+            QMessageBox.warning(self.window, "提示", "当前没有加载图像序列")
+            return
+
+        self._export_thread = QThread(self)
+        self._export_worker = ExportWorker(
+            viewer.get_export_frames(), fmt, params
+        )
+        self._export_worker.moveToThread(self._export_thread)
+
+        # 连接信号到导出对话框（如果还打开的话）
+        export_dialog = None
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, ExportDialog) and w.isVisible():
+                export_dialog = w
+                break
+
+        if export_dialog:
+            self._export_worker.progress.connect(export_dialog.on_progress)
+            self._export_worker.finished.connect(export_dialog.on_finished)
+            self._export_worker.error.connect(export_dialog.on_error)
+
+        self._export_worker.finished.connect(self._on_export_cleanup)
+        self._export_worker.error.connect(self._on_export_cleanup)
+
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.finished.connect(self._export_thread.quit)
+        self._export_worker.error.connect(self._export_thread.quit)
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_worker.error.connect(self._export_worker.deleteLater)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
+
+        self._export_thread.start()
+        self.window.status_bar.showMessage(f"正在导出{'视频' if fmt == 'mp4' else '图片'}...")
+
+    def _on_export_cleanup(self, *_args):
+        """导出完成后更新状态栏。"""
+        self.window.status_bar.showMessage("导出完成")
 
     # ---------- 公共接口 ----------
 
