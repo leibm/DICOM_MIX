@@ -68,8 +68,12 @@ DEFAULT_DSA_PORT = 11112
 # 目录配置
 # ------------------------------------------------------------------------------
 
-# 临时目录根路径（SCP 接收和本地载入的缓存目录）
-DEFAULT_TEMP_DIR = os.path.join(os.getcwd(), "temp_dicom")
+# 临时目录根路径（使用用户 LOCALAPPDATA，避免 Program Files 权限问题）
+DEFAULT_TEMP_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+    "DICOM_MIX_Tools",
+    "temp_dicom"
+)
 
 # 处理后的临时输出目录（用于"处理并发送到主机"的中间存储）
 DEFAULT_PROCESSED_DIR = os.path.join(DEFAULT_TEMP_DIR, "processed")

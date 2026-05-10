@@ -58,8 +58,12 @@ def ensure_dir(path: str) -> str:
 
 
 def get_temp_base_dir() -> str:
-    """获取默认的临时目录根路径（位于当前工作目录下的 temp_dicom）。"""
-    return ensure_dir(os.path.join(os.getcwd(), "temp_dicom"))
+    """获取默认的临时目录根路径（使用用户 LOCALAPPDATA）。"""
+    return ensure_dir(os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "DICOM_MIX_Tools",
+        "temp_dicom"
+    ))
 
 
 def is_valid_dicom(file_path: str) -> bool:
