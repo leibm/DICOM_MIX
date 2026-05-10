@@ -414,8 +414,8 @@ class CMoveWorker(QObject):
                         remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
                         total_ops = completed + remaining
                         self.progress.emit(completed, total_ops)
-                elif status.Status == 0x0000:
-                    # 最终成功完成，从 identifier 读取最终统计
+                elif status.Status in (0x0000, 0xB000):
+                    # 0x0000 = 成功完成, 0xB000 = 完成但有部分警告
                     if identifier:
                         completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
                         failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
