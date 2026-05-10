@@ -1426,8 +1426,7 @@ class MainWindow(QMainWindow):
 
     # ---------- 初始化界面 ----------
 
-    @staticmethod
-    def _set_window_icon():
+    def _set_window_icon(self):
         """尝试设置窗口图标（运行时和打包后均兼容）"""
         app = QApplication.instance()
         if app is None:
@@ -1441,7 +1440,9 @@ class MainWindow(QMainWindow):
         for path in candidates:
             if os.path.isfile(path):
                 from PySide6.QtGui import QIcon
-                app.setWindowIcon(QIcon(path))
+                icon = QIcon(path)
+                app.setWindowIcon(icon)
+                self.setWindowIcon(icon)
                 break
 
     def _init_ui(self):
