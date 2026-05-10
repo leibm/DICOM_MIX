@@ -2291,7 +2291,6 @@ class MainWindow(QMainWindow):
 
         if not name or not pid or not acc:
             self.lbl_manual_hint.setText("请填写所有必填项（带 * 号）")
-            QMessageBox.warning(self, "提示", "患者姓名、患者ID、检查号为必填项")
             return None
 
         self.lbl_manual_hint.setText("")
@@ -2365,6 +2364,7 @@ class MainWindow(QMainWindow):
         """点击：应用拆分并发送到主机"""
         target = self._get_target_patient_info()
         if target is None:
+            QMessageBox.warning(self, "提示", "发送到主机需要填写患者姓名、患者ID、检查号")
             return
         series_list = self._get_selected_series()
         if not series_list:
