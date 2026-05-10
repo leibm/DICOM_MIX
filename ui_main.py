@@ -1358,6 +1358,7 @@ class AboutDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(btn_close)
+        btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
     @staticmethod
