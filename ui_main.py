@@ -1618,7 +1618,8 @@ class MainWindow(QMainWindow):
         splitter.setSizes([280, 900])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        self.centralWidget().layout().addWidget(splitter)
+        splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.centralWidget().layout().addWidget(splitter, stretch=1)
 
         # -- 右侧：可停靠面板（默认隐藏） --
         self._init_right_dock()
@@ -2353,7 +2354,6 @@ class MainWindow(QMainWindow):
         self.lbl_target_summary.setStyleSheet("font-weight: 600; color: #111827;")
         layout.addWidget(self.lbl_target_summary)
 
-        layout.addStretch()
         self.centralWidget().layout().addLayout(layout)
 
     # ---------- 内部信号连接 ----------
