@@ -1318,19 +1318,17 @@ class AboutDialog(QDialog):
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        # 功能简介
-        features = QLabel(
-            "<b>主要功能</b><br>"
-            "• DICOM SCP 接收 · 本地导入 · 主机/DSA 查询拉取<br>"
-            "• 多帧 DSA 查看器（减影、窗宽窗位、循环播放）<br>"
-            "• 图像序列导出（MP4 / PNG）<br>"
-            "• 患者信息编辑 · UID 重置 · C-STORE 发送<br>"
-            "• 私有标签保护 · 多 DSA 节点管理"
+        # 版权与开源协议
+        license_text = QLabel(
+            "<b>开源协议</b><br>"
+            "本软件基于 MIT License 开源发布。<br>"
+            "Copyright © 2024-2026 lbmzjz. All rights reserved.<br><br>"
+            "第三方依赖：PySide6 · pydicom · pynetdicom · numpy · opencv-python"
         )
-        features.setStyleSheet("font-size: 12px; color: #4b5563; line-height: 1.7;")
-        features.setAlignment(Qt.AlignCenter)
-        features.setWordWrap(True)
-        layout.addWidget(features)
+        license_text.setStyleSheet("font-size: 12px; color: #4b5563; line-height: 1.7;")
+        license_text.setAlignment(Qt.AlignCenter)
+        license_text.setWordWrap(True)
+        layout.addWidget(license_text)
 
         layout.addStretch()
 
@@ -1346,7 +1344,7 @@ class AboutDialog(QDialog):
 
         # 技术栈
         tech = QLabel(
-            "技术栈：PySide6 · pydicom · pynetdicom · numpy · opencv-python&nbsp;&nbsp;|&nbsp;&nbsp;MIT License"
+            "技术栈：PySide6 · pydicom · pynetdicom · numpy · opencv-python"
         )
         tech.setStyleSheet("font-size: 11px; color: #9ca3af;")
         tech.setAlignment(Qt.AlignCenter)
