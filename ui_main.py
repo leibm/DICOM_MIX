@@ -2033,7 +2033,8 @@ class MainWindow(QMainWindow):
 
     def _on_scp_file_received(self, count: int):
         """SCP 接收文件进度（无总量，持续累加显示）"""
-        self.progress_bar.setMaximum(0)  # 无限进度条模式
+        self.progress_bar.setMaximum(max(count, 1))
+        self.progress_bar.setValue(count)
         self.status_bar.showMessage(f"SCP 接收中: 已接收 {count} 个文件")
 
     def _on_dsa_move_progress(self, current: int, total: int):

@@ -833,6 +833,9 @@ class ApplicationController(QObject):
             self.input_mgr.signals.error_occurred.connect(
                 self.window.input_signals.error_occurred
             )
+            self.input_mgr.signals.scp_file_received.connect(
+                self.window.input_signals.scp_file_received
+            )
             # 先断开旧连接再重新连接，避免重复累积
             for signal, slot in [
                 (self.window.request_start_scp, self.input_mgr.start_scp),
