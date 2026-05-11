@@ -93,24 +93,24 @@ QPushButton:pressed {
     background-color: #d0d0d0;
 }
 
-/* 蓝色 - 主要操作 */
+/* 绿色 - 主要操作 */
 QPushButton#success {
-    background-color: #333333;
+    background-color: #10b981;
     color: white;
     border: none;
 }
 
 QPushButton#success:hover {
-    background-color: #4a4a4a;
+    background-color: #059669;
 }
 
 QPushButton#success:pressed {
-    background-color: #1a1a1a;
+    background-color: #047857;
 }
 
 QPushButton#success:checked {
-    background-color: #1a1a1a;
-    border: 2px solid #333333;
+    background-color: #047857;
+    border: 2px solid #10b981;
 }
 
 /* 橙色 - 强调/警告 */
@@ -165,7 +165,7 @@ QToolButton#panelBtn::menu-indicator {
 
 /* SCP 接收按钮（已弃用，保留兼容） */
 QPushButton#scpBtn {
-    background-color: #333333;
+    background-color: #10b981;
     color: white;
     border: none;
     border-radius: 8px;
@@ -173,15 +173,15 @@ QPushButton#scpBtn {
 }
 
 QPushButton#scpBtn:hover {
-    background-color: #4a4a4a;
+    background-color: #059669;
 }
 
 QPushButton#scpBtn:pressed {
-    background-color: #2a2a2a;
+    background-color: #047857;
 }
 
 QPushButton#scpBtn:checked {
-    background-color: #1a1a1a;
+    background-color: #047857;
     color: white;
 }
 
@@ -528,12 +528,17 @@ class ExportWorker(QObject):
             elif self._fmt == "png":
                 output_dir = self._params["output_path"]
                 prefix = self._params.get("prefix", "frame_")
+                step = self._params.get("step", 1)
+                exported = 0
                 for i, frame in enumerate(self._frames):
+                    if i % step != 0:
+                        continue
                     fname = f"{prefix}{i:04d}.png"
                     fpath = os.path.join(output_dir, fname)
                     cv2.imwrite(fpath, frame)
+                    exported += 1
                     self.progress.emit(i + 1, total)
-                self.finished.emit(f"PNG 图片已导出到\n{output_dir}\n共 {total} 帧")
+                self.finished.emit(f"PNG 图片已导出到\n{output_dir}\n共 {exported} 张（步长 {step}）")
 
         except Exception as e:
             logger.exception("导出异常")

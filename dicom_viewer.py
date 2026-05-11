@@ -191,7 +191,6 @@ class DSAViewerWidget(QWidget):
     """
 
     mask_frame_changed = Signal(int)
-    export_requested = Signal()  # 用户点击导出按钮
     load_progress = Signal(int, int)  # (当前文件序号, 总文件数)
     prev_series_requested = Signal()  # 切换到上一序列
     next_series_requested = Signal()  # 切换到下一序列
@@ -239,6 +238,8 @@ class DSAViewerWidget(QWidget):
 
         # 右键拖动缩放状态
         self._right_dragging: bool = False
+        self._right_drag_started: bool = False
+        self._right_press_pos: QPoint = QPoint()
         self._right_drag_start: QPoint = QPoint()
         self._right_scale_start: float = 1.0
 
@@ -457,6 +458,10 @@ class DSAViewerWidget(QWidget):
         self.lbl_mask = QLabel("蒙片: 第 0 帧")
         self.lbl_mask.setStyleSheet("color: #6b7280; font-size: 11px; padding-left: 2px;")
         b1.addWidget(self.lbl_mask)
+        self.lbl_mask_hint = QLabel("💡 右键点击图像可快速修改蒙片")
+        self.lbl_mask_hint.setStyleSheet("color: #333333; font-size: 10px; padding: 2px;")
+        self.lbl_mask_hint.setWordWrap(True)
+        b1.addWidget(self.lbl_mask_hint)
 
         # 增益行：固定标签宽度，统一滑块长度
         gain_row = QHBoxLayout()
@@ -652,16 +657,6 @@ class DSAViewerWidget(QWidget):
         ctrl_row.addStretch()
         b3.addLayout(ctrl_row)
 
-        # 导出按钮
-        self.btn_export = QPushButton("导出 MP4 / PNG")
-        self.btn_export.setStyleSheet(PANEL_BTN_STYLE)
-        self.btn_export.setToolTip("导出为 MP4 视频或 PNG 图片序列")
-        self.btn_export.setCursor(QCursor(Qt.PointingHandCursor))
-        self.btn_export.setMinimumHeight(28)
-        self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(self.export_requested.emit)
-        b3.addWidget(self.btn_export)
-
         # 序列导航
         nav_row = QHBoxLayout()
         nav_row.setSpacing(6)
@@ -760,19 +755,31 @@ class DSAViewerWidget(QWidget):
             ):
                 self._end_wwwl_drag()
                 return True
-            # 右键：按住拖动缩放
+            # 右键：按住拖动缩放 / 单击弹出菜单
             if et == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
-                self._start_right_drag(event.globalPosition().toPoint())
+                self._right_press_pos = event.globalPosition().toPoint()
+                self._right_dragging = True
+                self._right_drag_started = False
                 return True
             if et == QEvent.MouseMove and self._right_dragging:
-                self._update_right_drag(event.globalPosition().toPoint())
+                pos = event.globalPosition().toPoint()
+                if not self._right_drag_started:
+                    # 移动超过阈值才判定为拖动，否则视为待点击
+                    if (pos - self._right_press_pos).manhattanLength() > 5:
+                        self._right_drag_started = True
+                        self._start_right_drag(self._right_press_pos)
+                if self._right_drag_started:
+                    self._update_right_drag(pos)
                 return True
-            if (
-                et == QEvent.MouseButtonRelease
-                and event.button() == Qt.RightButton
-                and self._right_dragging
-            ):
-                self._end_right_drag()
+            if et == QEvent.MouseButtonRelease and event.button() == Qt.RightButton:
+                if self._right_dragging:
+                    if self._right_drag_started:
+                        self._end_right_drag()
+                    else:
+                        # 未发生拖动，视为单击，弹出右键菜单
+                        self._on_viewer_context_menu(event.pos())
+                    self._right_dragging = False
+                    self._right_drag_started = False
                 return True
         return super().eventFilter(obj, event)
 
@@ -831,6 +838,8 @@ class DSAViewerWidget(QWidget):
                     self._dicom_info = {
                         "patient_name": _fmt_patient_name(getattr(ds, "PatientName", "")),
                         "patient_id": str(getattr(ds, "PatientID", "")),
+                        "patient_sex": str(getattr(ds, "PatientSex", "")),
+                        "patient_age": str(getattr(ds, "PatientAge", "")),
                         "study_date": str(getattr(ds, "StudyDate", "")),
                         "series_desc": str(getattr(ds, "SeriesDescription", "")),
                         "institution": str(getattr(ds, "InstitutionName", "")),
@@ -884,7 +893,6 @@ class DSAViewerWidget(QWidget):
         self.frame_slider.setRange(0, max(0, self._total_frames - 1))
         self.frame_slider.setValue(0)
         self.frame_slider.setEnabled(self._total_frames > 1)
-        self.btn_export.setEnabled(self._total_frames > 0)
         self.lbl_frame.setText(f"1 / {self._total_frames}")
 
         # 更新四个角 DICOM 角标
@@ -901,7 +909,6 @@ class DSAViewerWidget(QWidget):
         self._raw_frames = []
         self._total_frames = 0
         self._current_idx = 0
-        self.btn_export.setEnabled(False)
         self.pixmap_item.setPixmap(QPixmap())
         self.scene.setSceneRect(0, 0, 0, 0)
         # 切换序列时自动关闭实时减影、反相、锐度
@@ -960,13 +967,19 @@ class DSAViewerWidget(QWidget):
             self.lbl_corner_br.setText("")
             return
 
-        # 左上角：患者姓名 + ID
+        # 左上角：患者姓名 + ID + 性别 + 年龄
         name = info.get("patient_name", "")
         pid = info.get("patient_id", "")
-        tl_text = name if name else ""
+        sex = info.get("patient_sex", "")
+        age = info.get("patient_age", "")
+        tl_parts = []
+        if name:
+            tl_parts.append(name)
         if pid:
-            tl_text += f"\nID: {pid}" if tl_text else f"ID: {pid}"
-        self.lbl_corner_tl.setText(tl_text)
+            tl_parts.append(f"ID: {pid}")
+        if sex or age:
+            tl_parts.append(f"{sex}  {age}")
+        self.lbl_corner_tl.setText("\n".join(tl_parts))
 
         # 右上角：检查日期 + 医院
         date = info.get("study_date", "")
@@ -1431,3 +1444,25 @@ class DSAViewerWidget(QWidget):
             if self._subtraction_enabled:
                 raw = self._compute_subtraction(raw, self._raw_frames[self._mask_idx])
             yield self._apply_window(raw)
+
+    def export_current_frame(self, path: str) -> bool:
+        """导出当前显示的帧为 PNG 文件，应用当前窗宽窗位和减影设置。
+
+        参数：
+            path: 输出文件路径（建议以 .png 结尾）
+
+        返回：
+            是否成功导出
+        """
+        if not self._raw_frames or self._current_idx >= len(self._raw_frames):
+            return False
+        raw = self._raw_frames[self._current_idx]
+        if self._subtraction_enabled:
+            raw = self._compute_subtraction(raw, self._raw_frames[self._mask_idx])
+        frame = self._apply_window(raw)
+        try:
+            import cv2
+            cv2.imwrite(path, frame)
+            return True
+        except Exception:
+            return False

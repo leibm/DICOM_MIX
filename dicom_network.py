@@ -163,6 +163,9 @@ class CFindWorker(QObject):
             ds.StudyDescription = ""
             ds.NumberOfStudyRelatedSeries = ""
             ds.NumberOfStudyRelatedInstances = ""
+            ds.PatientSex = ""
+            ds.PatientAge = ""
+            ds.PatientBirthDate = ""
 
             # 4. 建立关联（Association）
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
@@ -184,6 +187,18 @@ class CFindWorker(QObject):
                         continue
                     if status.Status == 0xFF00:  # Pending（匹配结果）
                         if identifier is not None:
+                            patient_age = str(getattr(identifier, "PatientAge", ""))
+                            patient_birth_date = str(getattr(identifier, "PatientBirthDate", ""))
+                            # 若主机不返回 PatientAge，则根据出生日期自动计算
+                            if not patient_age and patient_birth_date and len(patient_birth_date) == 8:
+                                try:
+                                    from datetime import datetime
+                                    birth = datetime.strptime(patient_birth_date, "%Y%m%d")
+                                    today = datetime.now()
+                                    age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+                                    patient_age = f"{age:03d}Y"
+                                except Exception:
+                                    pass
                             result = {
                                 "patient_name": str(getattr(identifier, "PatientName", "")),
                                 "patient_id": str(getattr(identifier, "PatientID", "")),
@@ -191,6 +206,9 @@ class CFindWorker(QObject):
                                 "study_instance_uid": str(getattr(identifier, "StudyInstanceUID", "")),
                                 "study_date": str(getattr(identifier, "StudyDate", "")),
                                 "study_description": str(getattr(identifier, "StudyDescription", "")),
+                                "patient_sex": str(getattr(identifier, "PatientSex", "")),
+                                "patient_age": patient_age,
+                                "patient_birth_date": patient_birth_date,
                             }
                             results.append(result)
                             logger.debug(f"C-FIND 匹配结果: {result}")

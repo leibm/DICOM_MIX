@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QToolBar, QFormLayout, QApplication, QSpinBox,
     QDockWidget, QSizePolicy, QScrollArea,
     QToolButton, QMenu, QComboBox, QDialog, QTextBrowser,
-    QRadioButton,
+    QRadioButton, QTableWidget, QTableWidgetItem,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer, QSize
 from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap, QIcon
@@ -451,13 +451,16 @@ class PacsResultModel(QStandardItemModel):
     """用于右侧 Tab1 主机查询结果的表格模型"""
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
-        self.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        self.setHorizontalHeaderLabels(["患者姓名", "患者ID", "性别", "年龄", "出生日期", "检查号", "检查UID"])
 
     def add_result(self, result: Dict):
         """添加一行查询结果"""
         row = [
             QStandardItem(result.get("patient_name", "")),
             QStandardItem(result.get("patient_id", "")),
+            QStandardItem(result.get("patient_sex", "")),
+            QStandardItem(result.get("patient_age", "")),
+            QStandardItem(result.get("patient_birth_date", "")),
             QStandardItem(result.get("accession_number", "")),
             QStandardItem(result.get("study_instance_uid", "")),
         ]
@@ -470,8 +473,11 @@ class PacsResultModel(QStandardItemModel):
         return {
             "patient_name": self.item(row, 0).text(),
             "patient_id": self.item(row, 1).text(),
-            "accession_number": self.item(row, 2).text(),
-            "study_instance_uid": self.item(row, 3).text(),
+            "patient_sex": self.item(row, 2).text(),
+            "patient_age": self.item(row, 3).text(),
+            "patient_birth_date": self.item(row, 4).text(),
+            "accession_number": self.item(row, 5).text(),
+            "study_instance_uid": self.item(row, 6).text(),
         }
 
 
@@ -553,6 +559,7 @@ class PacsQueryDialog(QDialog):
         self.btn_move.setEnabled(False)
         self.btn_move.setMinimumWidth(90)
         self.btn_move.setMinimumHeight(28)
+        self.btn_move.setObjectName("success")
         self.btn_move.clicked.connect(self._on_move)
         btn_layout.addWidget(self.btn_move)
         self.btn_ok = QPushButton("确定")
@@ -560,6 +567,7 @@ class PacsQueryDialog(QDialog):
         self.btn_ok.setMinimumWidth(70)
         self.btn_ok.setMinimumHeight(28)
         self.btn_ok.setDefault(True)
+        self.btn_ok.setObjectName("success")
         self.btn_ok.clicked.connect(self.accept)
         btn_layout.addWidget(self.btn_ok)
         self.btn_cancel = QPushButton("取消")
@@ -640,7 +648,7 @@ class PacsQueryDialog(QDialog):
             self.combo_date_filter.setCurrentIndex(idx)
         # 恢复结果
         self.result_model.clear()
-        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "性别", "年龄", "出生日期", "检查号", "检查UID"])
         for r in state.get("results", []):
             self.result_model.add_result(r)
         # 恢复选中
@@ -675,7 +683,7 @@ class PacsQueryDialog(QDialog):
             "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
         }
         self.result_model.clear()
-        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "性别", "年龄", "出生日期", "检查号", "检查UID"])
         self.lbl_selected.setText("未选择目标患者")
         self.btn_ok.setEnabled(False)
         self.selected_data = None
@@ -710,12 +718,20 @@ class ExportDialog(QDialog):
 
     request_export = Signal(str, dict)  # (format, params)
 
-    def __init__(self, total_frames: int, frame_size: tuple, fps: int = 15, parent=None):
+    def __init__(self, total_frames: int, frame_size: tuple, fps: int = 15, preset_format: str = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("导出图像序列")
-        self.setMinimumWidth(420)
         self._total_frames = total_frames
         self._frame_size = frame_size
+        self._preset_format = preset_format  # 'mp4', 'png', or None
+
+        # 根据预设格式设置窗口标题
+        if preset_format == "mp4":
+            self.setWindowTitle("导出 MP4 视频")
+        elif preset_format == "png":
+            self.setWindowTitle("导出 PNG 图片序列")
+        else:
+            self.setWindowTitle("导出图像序列")
+        self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -725,15 +741,25 @@ class ExportDialog(QDialog):
         info.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(info)
 
-        # 格式选择
-        g_format = QGroupBox("导出格式")
-        fmt_layout = QHBoxLayout(g_format)
+        # 格式选择（仅通用模式显示）
+        self.g_format = QGroupBox("导出格式")
+        fmt_layout = QHBoxLayout(self.g_format)
         self.radio_mp4 = QRadioButton("MP4 视频")
         self.radio_mp4.setChecked(True)
         self.radio_png = QRadioButton("PNG 图片序列")
         fmt_layout.addWidget(self.radio_mp4)
         fmt_layout.addWidget(self.radio_png)
-        layout.addWidget(g_format)
+        layout.addWidget(self.g_format)
+
+        # 如果有预设格式，隐藏格式选择组并锁定内部状态
+        if preset_format == "mp4":
+            self.g_format.setVisible(False)
+            self.radio_mp4.setChecked(True)
+            self.radio_png.setEnabled(False)
+        elif preset_format == "png":
+            self.g_format.setVisible(False)
+            self.radio_png.setChecked(True)
+            self.radio_mp4.setEnabled(False)
 
         # MP4 选项
         self.mp4_group = QGroupBox("MP4 设置")
@@ -745,6 +771,9 @@ class ExportDialog(QDialog):
         self.spin_fps.installEventFilter(self)
         self.spin_fps.setFocusPolicy(Qt.StrongFocus)
         mp4_form.addRow("帧率 (FPS):", self.spin_fps)
+        self.edit_mp4_name = QLineEdit("output")
+        self.edit_mp4_name.setPlaceholderText("输出文件名（不含扩展名）")
+        mp4_form.addRow("文件名:", self.edit_mp4_name)
         layout.addWidget(self.mp4_group)
 
         # PNG 选项
@@ -753,6 +782,14 @@ class ExportDialog(QDialog):
         png_form.setLabelAlignment(Qt.AlignRight)
         self.edit_prefix = QLineEdit("frame_")
         png_form.addRow("文件名前缀:", self.edit_prefix)
+        # 间隔步长
+        self.spin_step = QSpinBox()
+        self.spin_step.setRange(1, total_frames)
+        self.spin_step.setValue(1)
+        self.spin_step.setToolTip("每隔 N 帧导出一张，1 表示全部导出")
+        self.spin_step.installEventFilter(self)
+        self.spin_step.setFocusPolicy(Qt.StrongFocus)
+        png_form.addRow("间隔帧数:", self.spin_step)
         layout.addWidget(self.png_group)
 
         # 初始状态：根据选中格式显示/隐藏
@@ -783,7 +820,7 @@ class ExportDialog(QDialog):
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
-        if event.type() == QEvent.Wheel and obj is self.spin_fps:
+        if event.type() == QEvent.Wheel and obj in (self.spin_fps, self.spin_step):
             event.ignore()
             return True
         return super().eventFilter(obj, event)
@@ -800,11 +837,15 @@ class ExportDialog(QDialog):
             params["fps"] = self.spin_fps.value()
         else:
             params["prefix"] = self.edit_prefix.text().strip() or "frame_"
+            params["step"] = self.spin_step.value()
 
         # 弹出保存路径选择
         if fmt == "mp4":
+            default_name = self.edit_mp4_name.text().strip() or "output"
+            if not default_name.lower().endswith(".mp4"):
+                default_name += ".mp4"
             path, _ = QFileDialog.getSaveFileName(
-                self, "保存 MP4 视频", "output.mp4",
+                self, "保存 MP4 视频", default_name,
                 "MP4 视频 (*.mp4)"
             )
         else:
@@ -838,6 +879,178 @@ class ExportDialog(QDialog):
         self.btn_export.setEnabled(True)
         self.btn_cancel.setEnabled(True)
         QMessageBox.critical(self, "导出失败", message)
+
+
+class DicomTagEditorDialog(QDialog):
+    """DICOM 标签编辑器对话框"""
+
+    def __init__(self, file_path: str, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle(f"DICOM 标签编辑器 - {os.path.basename(file_path)}")
+        self.setMinimumSize(700, 600)
+        self.resize(800, 700)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # 文件路径提示
+        lbl_path = QLabel(f"文件: {file_path}")
+        lbl_path.setStyleSheet("color: #6b7280; font-size: 11px;")
+        lbl_path.setWordWrap(True)
+        layout.addWidget(lbl_path)
+
+        # 标签表格
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["标签", "名称", "值", "VR"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setStyleSheet(
+            "QTableWidget { font-size: 13px; }"
+            "QTableWidget::item { padding: 2px; }"
+            "QTableWidget QLineEdit { min-height: 24px; padding: 2px; }"
+        )
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setColumnWidth(0, 90)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setColumnWidth(3, 50)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        # 覆盖原始文件选项
+        self.chk_overwrite = QCheckBox("覆盖原始文件（勾选后将直接修改源文件，请谨慎操作）")
+        self.chk_overwrite.setStyleSheet("color: #b91c1c; font-size: 12px;")
+        layout.addWidget(self.chk_overwrite)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_save = QPushButton("保存修改")
+        self.btn_save.setObjectName("success")
+        self.btn_save.clicked.connect(self._on_save)
+        btn_layout.addWidget(self.btn_save)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.setObjectName("secondary")
+        self.btn_close.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+
+        self._load_tags()
+
+    def _load_tags(self):
+        """加载 DICOM 标签到表格（不加载像素数据，避免内存占用）"""
+        try:
+            ds = dcmread(self.file_path, stop_before_pixels=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法读取 DICOM 文件:\n{e}")
+            return
+
+        self.table.setRowCount(0)
+        row = 0
+        for elem in ds:
+            if elem.tag.is_private or elem.tag == (0x7FE0, 0x0010):
+                continue
+            if elem.VR == "SQ":
+                continue
+            self.table.insertRow(row)
+            # Tag hex
+            tag_item = QTableWidgetItem(str(elem.tag))
+            tag_item.setFlags(tag_item.flags() & ~Qt.ItemIsEditable)
+            tag_item.setData(Qt.UserRole, elem.tag)
+            self.table.setItem(row, 0, tag_item)
+            # Name
+            name_item = QTableWidgetItem(elem.keyword or "")
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 1, name_item)
+            # Value
+            val_str = str(elem.value) if elem.value is not None else ""
+            val_item = QTableWidgetItem(val_str)
+            self.table.setItem(row, 2, val_item)
+            # VR
+            vr_item = QTableWidgetItem(elem.VR or "")
+            vr_item.setFlags(vr_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 3, vr_item)
+            row += 1
+
+        self.table.sortItems(0, Qt.AscendingOrder)
+
+    def _on_save(self):
+        """保存修改"""
+        try:
+            ds = dcmread(self.file_path, stop_before_pixels=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法读取 DICOM 文件:\n{e}")
+            return
+
+        modified = 0
+        errors = []
+        for row in range(self.table.rowCount()):
+            tag_item = self.table.item(row, 0)
+            val_item = self.table.item(row, 2)
+            if tag_item is None or val_item is None:
+                continue
+            tag = tag_item.data(Qt.UserRole)
+            new_val = val_item.text()
+            try:
+                elem = ds[tag]
+                old_val = str(elem.value) if elem.value is not None else ""
+                if new_val != old_val:
+                    try:
+                        if elem.VR in ("US", "SS", "UL", "SL"):
+                            elem.value = int(new_val)
+                        elif elem.VR in ("FL", "FD"):
+                            elem.value = float(new_val)
+                        elif elem.VR == "IS":
+                            elem.value = int(new_val)
+                        elif elem.VR == "DS":
+                            if "." in new_val:
+                                elem.value = float(new_val)
+                            else:
+                                elem.value = int(new_val)
+                        else:
+                            elem.value = new_val
+                        modified += 1
+                    except Exception as e2:
+                        errors.append(f"{tag}: {e2}")
+            except KeyError:
+                continue
+
+        if modified == 0 and not errors:
+            QMessageBox.information(self, "提示", "没有需要保存的修改")
+            return
+
+        if errors:
+            reply = QMessageBox.question(
+                self, "部分字段无法修改",
+                f"以下 {len(errors)} 个字段修改失败:\n" + "\n".join(errors[:5]) + "\n\n是否继续保存其他修改？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # 保存文件
+        output_path = self.file_path if self.chk_overwrite.isChecked() else None
+        if not output_path:
+            output_path, _ = QFileDialog.getSaveFileName(
+                self, "保存 DICOM 文件", self.file_path,
+                "DICOM 文件 (*.dcm);;所有文件 (*.*)"
+            )
+        if not output_path:
+            return
+
+        try:
+            ds.save_as(output_path)
+            QMessageBox.information(self, "保存成功", f"已保存 {modified} 处修改到:\n{output_path}")
+            if output_path == self.file_path:
+                self._load_tags()
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"写入文件时出错:\n{e}")
 
 
 class DsaNodeEditDialog(QDialog):
@@ -982,6 +1195,7 @@ class DsaQueryDialog(QDialog):
         top_layout.addStretch()
 
         self.btn_find = QPushButton("查询 DSA")
+        self.btn_find.setObjectName("success")
         self.btn_find.clicked.connect(self._on_find)
         top_layout.addWidget(self.btn_find)
         layout.addLayout(top_layout)
@@ -989,7 +1203,7 @@ class DsaQueryDialog(QDialog):
         # 结果表格
         self.result_table = QTableView()
         self.result_model = QStandardItemModel()
-        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查日期", "检查UID"])
+        self.result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "性别", "年龄", "出生日期", "检查号", "检查日期", "检查UID"])
         self.result_table.setModel(self.result_model)
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1016,9 +1230,11 @@ class DsaQueryDialog(QDialog):
         btn_layout.addStretch()
         self.btn_move = QPushButton("拉取选中检查")
         self.btn_move.setEnabled(False)
+        self.btn_move.setObjectName("success")
         self.btn_move.clicked.connect(self._on_move)
         btn_layout.addWidget(self.btn_move)
         self.btn_close = QPushButton("关闭")
+        self.btn_close.setObjectName("secondary")
         self.btn_close.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_close)
         layout.addLayout(btn_layout)
@@ -1061,6 +1277,9 @@ class DsaQueryDialog(QDialog):
             row = [
                 QStandardItem(result.get("patient_name", "")),
                 QStandardItem(result.get("patient_id", "")),
+                QStandardItem(result.get("patient_sex", "")),
+                QStandardItem(result.get("patient_age", "")),
+                QStandardItem(result.get("patient_birth_date", "")),
                 QStandardItem(result.get("accession_number", "")),
                 QStandardItem(result.get("study_date", "")),
                 QStandardItem(result.get("study_instance_uid", "")),
@@ -1074,7 +1293,7 @@ class DsaQueryDialog(QDialog):
         """选中行"""
         row = index.row()
         if row >= 0:
-            self._selected_study_uid = self.result_model.item(row, 4).text()
+            self._selected_study_uid = self.result_model.item(row, 7).text()
             self.btn_move.setEnabled(True)
 
     def _on_move(self):
@@ -1139,9 +1358,12 @@ class DsaQueryDialog(QDialog):
             results.append({
                 "patient_name": self.result_model.item(row, 0).text(),
                 "patient_id": self.result_model.item(row, 1).text(),
-                "accession_number": self.result_model.item(row, 2).text(),
-                "study_date": self.result_model.item(row, 3).text(),
-                "study_instance_uid": self.result_model.item(row, 4).text(),
+                "patient_sex": self.result_model.item(row, 2).text(),
+                "patient_age": self.result_model.item(row, 3).text(),
+                "patient_birth_date": self.result_model.item(row, 4).text(),
+                "accession_number": self.result_model.item(row, 5).text(),
+                "study_date": self.result_model.item(row, 6).text(),
+                "study_instance_uid": self.result_model.item(row, 7).text(),
             })
         return {
             "results": results,
@@ -1169,6 +1391,9 @@ class DsaQueryDialog(QDialog):
             row = [
                 QStandardItem(r.get("patient_name", "")),
                 QStandardItem(r.get("patient_id", "")),
+                QStandardItem(r.get("patient_sex", "")),
+                QStandardItem(r.get("patient_age", "")),
+                QStandardItem(r.get("patient_birth_date", "")),
                 QStandardItem(r.get("accession_number", "")),
                 QStandardItem(r.get("study_date", "")),
                 QStandardItem(r.get("study_instance_uid", "")),
@@ -1180,7 +1405,7 @@ class DsaQueryDialog(QDialog):
         uid = state.get("selected_uid", "")
         if uid:
             for row in range(self.result_model.rowCount()):
-                if self.result_model.item(row, 4).text() == uid:
+                if self.result_model.item(row, 7).text() == uid:
                     self.result_table.selectRow(row)
                     self._selected_study_uid = uid
                     self.btn_move.setEnabled(True)
@@ -1383,7 +1608,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V3.3")
+        version = QLabel("版本 V3.5")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -1584,12 +1809,13 @@ class MainWindow(QMainWindow):
         self.btn_data_load.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
         self.btn_data_load.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.menu_data_load = QMenu(self.btn_data_load)
-        self.act_load_local = self.menu_data_load.addAction("📁 载入本地文件夹")
+        self.menu_data_load.setStyleSheet(self._menu_style())
+        self.act_load_local = self.menu_data_load.addAction("载入本地文件夹")
         self.act_load_local.triggered.connect(self._on_load_local)
         self.menu_data_load.addSeparator()
-        self.act_query_pacs = self.menu_data_load.addAction("🔍 查询主机")
+        self.act_query_pacs = self.menu_data_load.addAction("查询主机")
         self.act_query_pacs.triggered.connect(self._on_show_pacs_query)
-        self.act_query_dsa = self.menu_data_load.addAction("🔍 查询 DSA")
+        self.act_query_dsa = self.menu_data_load.addAction("查询 DSA")
         self.act_query_dsa.triggered.connect(self._on_show_dsa_query)
         self.btn_data_load.setMenu(self.menu_data_load)
         toolbar.addWidget(self.btn_data_load)
@@ -1603,18 +1829,44 @@ class MainWindow(QMainWindow):
         self.btn_send_menu.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
         self.btn_send_menu.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.menu_send_target = QMenu(self.btn_send_menu)
+        self.menu_send_target.setStyleSheet(self._menu_style())
         self.btn_send_menu.setMenu(self.menu_send_target)
+        self.btn_send_menu.setEnabled(False)
         toolbar.addWidget(self.btn_send_menu)
 
-        # 导出到本地
-        self.btn_export_local_toolbar = QPushButton()
+        # 导出菜单
+        self.btn_export_local_toolbar = QToolButton()
         self.btn_export_local_toolbar.setIcon(FluentIcon.SAVE_AS.icon())
         self.btn_export_local_toolbar.setObjectName("panelBtn")
-        self.btn_export_local_toolbar.setToolTip("导出到本地")
+        self.btn_export_local_toolbar.setToolTip("导出")
         self.btn_export_local_toolbar.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
         self.btn_export_local_toolbar.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
-        self.btn_export_local_toolbar.clicked.connect(self._on_process_and_export)
+        self.btn_export_local_toolbar.setPopupMode(QToolButton.InstantPopup)
+        self.menu_export = QMenu(self.btn_export_local_toolbar)
+        self.menu_export.setStyleSheet(self._menu_style())
+        self.act_export_dicom = self.menu_export.addAction("导出处理后的 DICOM")
+        self.act_export_dicom.triggered.connect(self._on_process_and_export)
+        self.menu_export.addSeparator()
+        self.act_export_mp4 = self.menu_export.addAction("导出序列为 MP4")
+        self.act_export_mp4.triggered.connect(self._on_export_sequence_mp4)
+        self.act_export_png = self.menu_export.addAction("导出序列为 PNG")
+        self.act_export_png.triggered.connect(self._on_export_sequence_png)
+        self.act_export_frame = self.menu_export.addAction("导出当前帧")
+        self.act_export_frame.triggered.connect(self._on_export_current_frame)
+        self.btn_export_local_toolbar.setMenu(self.menu_export)
+        self.btn_export_local_toolbar.setEnabled(False)
         toolbar.addWidget(self.btn_export_local_toolbar)
+
+        # DICOM标签编辑器按钮
+        self.btn_edit_dicom = QPushButton()
+        self.btn_edit_dicom.setIcon(FluentIcon.EDIT.icon())
+        self.btn_edit_dicom.setObjectName("panelBtn")
+        self.btn_edit_dicom.setToolTip("编辑DICOM标签")
+        self.btn_edit_dicom.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_edit_dicom.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
+        self.btn_edit_dicom.clicked.connect(self._on_edit_dicom_tags)
+        self.btn_edit_dicom.setEnabled(False)
+        toolbar.addWidget(self.btn_edit_dicom)
 
         # 清除缓存按钮
         self.btn_clear_cache = QPushButton()
@@ -1648,7 +1900,7 @@ class MainWindow(QMainWindow):
 
         # 右侧面板切换按钮
         self.btn_panel_patient = QPushButton()
-        self.btn_panel_patient.setIcon(FluentIcon.EDIT.icon())
+        self.btn_panel_patient.setIcon(FluentIcon.PENCIL_INK.icon())
         self.btn_panel_patient.setCheckable(True)
         self.btn_panel_patient.setObjectName("panelBtn")
         self.btn_panel_patient.setToolTip("修改病人信息")
@@ -1766,7 +2018,7 @@ class MainWindow(QMainWindow):
         hbox.addWidget(self.btn_delete_tree)
 
         self.btn_clear_tree_left = QPushButton()
-        self.btn_clear_tree_left.setIcon(FluentIcon.DELETE.icon())
+        self.btn_clear_tree_left.setIcon(FluentIcon.BROOM.icon())
         self.btn_clear_tree_left.setObjectName("panelBtn")
         self.btn_clear_tree_left.setToolTip("清空列表")
         self.btn_clear_tree_left.setFixedSize(36, 36)
@@ -2001,7 +2253,7 @@ class MainWindow(QMainWindow):
         self.edit_manual_age.setMaximumWidth(80)
         sex_age.addWidget(self.edit_manual_age)
         sex_age.addStretch()
-        f2.addRow("性别 / 年龄:", sex_age)
+        f2.addRow("性别:", sex_age)
 
         self.edit_manual_birth = QLineEdit()
         self.edit_manual_birth.setPlaceholderText("YYYYMMDD，如 19800101")
@@ -2085,7 +2337,7 @@ class MainWindow(QMainWindow):
         self.edit_manual_age.setMaximumWidth(80)
         sex_age.addWidget(self.edit_manual_age)
         sex_age.addStretch()
-        f2.addRow("性别 / 年龄:", sex_age)
+        f2.addRow("性别:", sex_age)
 
         self.edit_manual_birth = QLineEdit()
         self.edit_manual_birth.setPlaceholderText("YYYYMMDD，如 19800101")
@@ -2195,15 +2447,20 @@ class MainWindow(QMainWindow):
         self.dsa_nodes_table.verticalHeader().setVisible(False)
         self.dsa_nodes_table.setAlternatingRowColors(True)
         self.dsa_nodes_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # 固定高度以容纳表头 + 3 行数据
+        self.dsa_nodes_table.setMinimumHeight(100)
+        self.dsa_nodes_table.setMaximumHeight(120)
         dsa_layout.addWidget(self.dsa_nodes_table)
 
         # 操作按钮
         dsa_btn_layout = QHBoxLayout()
         self.btn_dsa_add = QPushButton("添加")
+        self.btn_dsa_add.setObjectName("success")
         self.btn_dsa_add.clicked.connect(self._on_dsa_add)
         dsa_btn_layout.addWidget(self.btn_dsa_add)
 
         self.btn_dsa_edit = QPushButton("编辑")
+        self.btn_dsa_edit.setObjectName("success")
         self.btn_dsa_edit.clicked.connect(self._on_dsa_edit)
         dsa_btn_layout.addWidget(self.btn_dsa_edit)
 
@@ -2478,12 +2735,12 @@ class MainWindow(QMainWindow):
         """刷新发送目标下拉菜单（根据网络节点动态变化）。"""
         self.menu_send_target.clear()
         # 主机
-        act_pacs = self.menu_send_target.addAction("📤 发送到主机")
+        act_pacs = self.menu_send_target.addAction("发送到主机")
         act_pacs.triggered.connect(lambda checked=False, t="pacs": self._on_process_and_send(t))
         # DSA 节点
         for idx, node in enumerate(self._dsa_nodes):
             name = node.get("name", f"DSA-{idx+1}")
-            act = self.menu_send_target.addAction(f"📤 发送到 {name}")
+            act = self.menu_send_target.addAction(f"发送到 {name}")
             act.triggered.connect(lambda checked=False, t=f"dsa:{idx}": self._on_process_and_send(t))
 
     def _on_dsa_add(self):
@@ -2507,7 +2764,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self._dsa_nodes[row] = dialog.get_node()
             self._refresh_dsa_table()
-            self._refresh_send_target_combo()
+            self._refresh_send_target_menu()
 
     def _on_dsa_delete(self):
         """删除选中的 DSA 节点"""
@@ -2528,7 +2785,7 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self._dsa_nodes.pop(row)
             self._refresh_dsa_table()
-            self._refresh_send_target_combo()
+            self._refresh_send_target_menu()
 
     def _init_bottom_bar(self):
         """底部信息栏：显示当前目标患者摘要"""
@@ -2574,9 +2831,6 @@ class MainWindow(QMainWindow):
 
         # 左侧树勾选状态变化时更新底部目标摘要
         self.tree_model.dataChanged.connect(self._on_tree_check_changed)
-
-        # DSA 查看器导出按钮
-        self.dsa_viewer.export_requested.connect(self._on_show_export)
 
         # DSA 查看器加载进度
         self.dsa_viewer.load_progress.connect(self._on_viewer_load_progress)
@@ -2781,8 +3035,12 @@ class MainWindow(QMainWindow):
         dialog = AboutDialog(self)
         dialog.exec()
 
-    def _on_show_export(self):
+    def _on_show_export(self, preset_format: str = None):
         """显示导出对话框"""
+        checked = self._get_selected_series()
+        if not checked:
+            QMessageBox.warning(self, "提示", "请先在左侧勾选需要导出的序列")
+            return
         viewer = self.dsa_viewer
         if not viewer or viewer.total_frames == 0:
             QMessageBox.warning(self, "提示", "当前没有加载图像序列")
@@ -2791,6 +3049,7 @@ class MainWindow(QMainWindow):
             total_frames=viewer.total_frames,
             frame_size=viewer.frame_size,
             fps=viewer._fps,
+            preset_format=preset_format,
             parent=self
         )
         # 连接导出请求信号到主窗口信号（由 main.py 处理实际导出）
@@ -2804,6 +3063,73 @@ class MainWindow(QMainWindow):
             pass
         self._export_dialog = None
 
+    def _on_export_sequence_mp4(self):
+        """导出序列为 MP4"""
+        self._on_show_export(preset_format="mp4")
+
+    def _on_export_sequence_png(self):
+        """导出序列为 PNG"""
+        self._on_show_export(preset_format="png")
+
+    def _on_export_current_frame(self):
+        """导出当前帧为单张图片"""
+        checked = self._get_selected_series()
+        if not checked:
+            QMessageBox.warning(self, "提示", "请先在左侧勾选需要导出的序列")
+            return
+        viewer = self.dsa_viewer
+        if not viewer or viewer.total_frames == 0:
+            QMessageBox.warning(self, "提示", "当前没有加载图像序列")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存当前帧", "frame.png",
+            "PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+
+        if viewer.export_current_frame(path):
+            QMessageBox.information(self, "导出完成", f"已保存到:\n{path}")
+        else:
+            QMessageBox.critical(self, "导出失败", "保存图片时出错，请检查路径和权限。")
+
+    def _on_edit_dicom_tags(self):
+        """编辑当前选中序列的 DICOM 标签"""
+        current = self.tree_view.selectionModel().currentIndex()
+        if not current.isValid():
+            QMessageBox.warning(self, "提示", "请先在左侧点击选中需要编辑的序列")
+            return
+        item = current.internalPointer()
+        if not item or not hasattr(item, 'data'):
+            QMessageBox.warning(self, "提示", "请先在左侧点击选中需要编辑的序列")
+            return
+
+        data = item.data
+        node_type = data.get("type", "")
+        file_path = ""
+
+        if "影像" in node_type:
+            file_path = data.get("file_path", "")
+        elif "序列" in node_type:
+            instances = data.get("instances", [])
+            if instances:
+                file_path = instances[0]
+        elif "检查" in node_type:
+            if hasattr(item, 'children'):
+                for child in item.children:
+                    child_data = getattr(child, 'data', {})
+                    instances = child_data.get("instances", [])
+                    if instances:
+                        file_path = instances[0]
+                        break
+
+        if not file_path or not os.path.isfile(file_path):
+            QMessageBox.warning(self, "提示", "未找到可编辑的 DICOM 文件")
+            return
+        dialog = DicomTagEditorDialog(file_path, parent=self)
+        dialog.exec()
+
     def _on_refresh_tree(self):
         """手动刷新左侧树（可由外部业务逻辑实现）"""
         # 占位：通常由 main.py 协调调用 dicom_input 扫描临时目录后重新加载
@@ -2814,6 +3140,7 @@ class MainWindow(QMainWindow):
         self.tree_model.clear()
         if hasattr(self, 'dsa_viewer') and self.dsa_viewer:
             self.dsa_viewer.clear()
+        self.btn_edit_dicom.setEnabled(False)
         self.status_bar.showMessage("已清空源数据列表")
 
     def _on_tree_context_menu(self, position):
@@ -3105,40 +3432,39 @@ class MainWindow(QMainWindow):
         树节点选择变化：加载图像到 DSA 查看器。
         高亮选中（变蓝色）仅用于加载预览，与复选框勾选（标记可移除/处理）完全独立。
         """
-        if not current.isValid():
-            return
+        has_selection = False
+        if current.isValid():
+            item = current.internalPointer()
+            if item and hasattr(item, 'data'):
+                data = item.data
+                node_type = data.get("type", "")
+                file_list: List[str] = []
 
-        item = current.internalPointer()
-        if not item or not hasattr(item, 'data'):
-            return
+                if "影像" in node_type:
+                    fpath = data.get("file_path", "")
+                    if fpath and os.path.isfile(fpath):
+                        file_list = [fpath]
+                elif "序列" in node_type:
+                    file_list = data.get("instances", [])
+                elif "检查" in node_type:
+                    if hasattr(item, 'children'):
+                        for child in item.children:
+                            child_data = getattr(child, 'data', {})
+                            file_list.extend(child_data.get("instances", []))
 
-        data = item.data
-        node_type = data.get("type", "")
-        file_list: List[str] = []
+                has_selection = bool(file_list)
 
-        if "影像" in node_type:
-            # Instance 节点：只加载单张图像
-            fpath = data.get("file_path", "")
-            if fpath and os.path.isfile(fpath):
-                file_list = [fpath]
-        elif "序列" in node_type:
-            file_list = data.get("instances", [])
-        elif "检查" in node_type:
-            # Study 节点：收集所有子序列文件
-            if hasattr(item, 'children'):
-                for child in item.children:
-                    child_data = getattr(child, 'data', {})
-                    file_list.extend(child_data.get("instances", []))
+                # 自动将当前选中 study 的患者信息填入底部目标摘要（作为默认值）
+                self._update_target_from_tree_item(item)
 
-        # 自动将当前选中 study 的患者信息填入底部目标摘要（作为默认值）
-        self._update_target_from_tree_item(item)
+                if file_list:
+                    self.dsa_viewer.load_series(file_list)
+                    self.status_bar.showMessage(
+                        f"已加载 {data.get('name', '')}: {len(file_list)} 个文件, "
+                        f"预计 {self.dsa_viewer.total_frames} 帧"
+                    )
 
-        if file_list:
-            self.dsa_viewer.load_series(file_list)
-            self.status_bar.showMessage(
-                f"已加载 {data.get('name', '')}: {len(file_list)} 个文件, "
-                f"预计 {self.dsa_viewer.total_frames} 帧"
-            )
+        self.btn_edit_dicom.setEnabled(has_selection)
 
     def _update_target_from_tree_item(self, item):
         """从树节点向上追溯 Study，提取患者信息更新底部目标摘要。"""
@@ -3159,9 +3485,12 @@ class MainWindow(QMainWindow):
             })
 
     def _on_tree_check_changed(self):
-        """树形控件复选框状态变化时，根据勾选的序列更新底部目标摘要。"""
+        """树形控件复选框状态变化时，根据勾选的序列更新底部目标摘要和工具栏按钮状态。"""
         checked = self.tree_model.get_checked_series()
-        if checked:
+        has_checked = bool(checked)
+
+        # 更新底部目标摘要
+        if has_checked:
             data = checked[0]
             name = data.get("patient_name", "")
             pid = data.get("patient_id", "")
@@ -3174,6 +3503,10 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_target_summary.setText("目标患者: [未选择]")
 
+        # 更新工具栏按钮状态（勾选才算被选中）
+        self.btn_send_menu.setEnabled(has_checked)
+        self.btn_export_local_toolbar.setEnabled(has_checked)
+
     def _on_pacs_find(self):
         """点击主机查询按钮"""
         query = {
@@ -3183,7 +3516,7 @@ class MainWindow(QMainWindow):
         }
         self.status_bar.showMessage("正在查询主机 ...")
         self.pacs_result_model.clear()
-        self.pacs_result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "检查号", "检查UID"])
+        self.pacs_result_model.setHorizontalHeaderLabels(["患者姓名", "患者ID", "性别", "年龄", "出生日期", "检查号", "检查UID"])
         self.request_pacs_find.emit(query)
 
     def _on_find_results_ready(self, results: List[Dict]):
@@ -3205,6 +3538,9 @@ class MainWindow(QMainWindow):
             self.edit_manual_id.setText(data.get("patient_id", ""))
             self.edit_manual_acc.setText(data.get("accession_number", ""))
             self.edit_manual_study_uid.setText(data.get("study_instance_uid", ""))
+            self.edit_manual_sex.setText(data.get("patient_sex", ""))
+            self.edit_manual_age.setText(data.get("patient_age", ""))
+            self.edit_manual_birth.setText(data.get("patient_birth_date", ""))
         else:
             self.lbl_pacs_selected.setText("未选择目标患者")
 
@@ -3367,6 +3703,33 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"错误: {message}")
 
     # ---------- 工具方法 ----------
+
+    @staticmethod
+    def _menu_style() -> str:
+        """统一下拉菜单的 QSS 样式。"""
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1a2a3a;
+                border: 1px solid #c8c8c8;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QMenu::item {
+                padding: 8px 24px;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+            QMenu::item:selected {
+                background-color: #d1fae5;
+                color: #333333;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #c8c8c8;
+                margin: 6px 12px;
+            }
+        """
 
     @staticmethod
     def _get_temp_dir() -> str:
