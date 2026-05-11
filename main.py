@@ -42,6 +42,12 @@ from PySide6.QtCore import QObject, Qt, QTimer, QThread, Signal
 # Fluent Design 主题
 from qfluentwidgets import setTheme, Theme, setThemeColor
 
+# V4.0: DICOM 异构数据归一化模块
+from dicom_normalizer import DICOMNormalizer, DicomNormalizeError
+
+# V4.0: 插件管理器
+from plugin_manager import PluginManager, PluginError
+
 FLUENT_STYLE = """
 /* 现代医疗工具风格 - 黑白灰统一主题 */
 QWidget {
@@ -545,6 +551,37 @@ class ExportWorker(QObject):
             self.error.emit(f"导出异常: {e}")
 
 
+class NormalizerWorker(QObject):
+    """在后台线程中执行 DICOM 异构数据归一化。"""
+
+    progress = Signal(str)    # 进度消息（文本形式）
+    finished = Signal(dict)   # 完成时返回处理摘要
+    error = Signal(str)       # 错误消息
+
+    def __init__(self, file_paths: list, output_dir: str, target: str = "GE", parent=None):
+        super().__init__(parent)
+        self._file_paths = file_paths
+        self._output_dir = output_dir
+        self._target = target
+
+    def run(self):
+        try:
+            normalizer = DICOMNormalizer(
+                target_manufacturer=self._target,
+                verbose=False,  # 由 UI 信号替代控制台输出
+            )
+            # 手动发送进度消息（覆盖 normalizer 的 verbose 输出）
+            self.progress.emit("步骤 1/6: 读取并排序切片...")
+            summary = normalizer.normalize_files(self._file_paths, self._output_dir)
+            self.progress.emit("步骤 6/6: 灰度映射标准化完成，正在保存...")
+            self.finished.emit(summary)
+        except DicomNormalizeError as e:
+            self.error.emit(str(e))
+        except Exception as e:
+            logger.exception("归一化异常")
+            self.error.emit(f"归一化异常: {e}")
+
+
 # ------------------------------------------------------------------------------
 # 应用控制器（负责模块组装与业务逻辑编排）
 # ------------------------------------------------------------------------------
@@ -601,6 +638,11 @@ class ApplicationController(QObject):
             temp_dir=os.path.join(get_temp_dir(), "processed"),
             parent=self
         )
+
+        # V4.0: 初始化插件管理器
+        self.plugin_mgr = PluginManager()
+        # 将 plugin_mgr 引用传递给 UI，以便 PluginManagerDialog 使用
+        self.window._plugin_manager = self.plugin_mgr
 
         # 3. 连接信号
         self._connect_signals()
@@ -717,6 +759,9 @@ class ApplicationController(QObject):
         # 导出请求
         self.window.request_export.connect(self._on_export)
 
+        # 归一化请求 (V4.0)
+        self.window.request_normalize.connect(self._on_normalize)
+
         # 网络配置变更时重新初始化网络模块
         self.window.network_config_changed.connect(self._on_network_config_changed)
 
@@ -725,6 +770,11 @@ class ApplicationController(QObject):
 
         # 左侧刷新按钮
         self.window.btn_refresh_tree.clicked.connect(self._refresh_study_tree)
+
+        # ===== 插件管理信号 (V4.0) =====
+        self.window.request_plugin_install.connect(self._on_plugin_install)
+        self.window.request_plugin_uninstall.connect(self._on_plugin_uninstall)
+        self.window.request_plugin_activate.connect(self._on_plugin_activate)
 
     # ---------- 业务逻辑处理 ----------
 
@@ -1103,6 +1153,125 @@ class ApplicationController(QObject):
     def _on_export_cleanup(self, *_args):
         """导出完成后更新状态栏。"""
         self.window.status_bar.showMessage("导出完成")
+
+    # ---------- 归一化处理 ----------
+
+    def _on_normalize(self, file_paths: list, output_dir: str, target: str):
+        """处理 DICOM 异构数据归一化请求。"""
+        self._normalizer_thread = QThread(self)
+        self._normalizer_worker = NormalizerWorker(file_paths, output_dir, target)
+        self._normalizer_worker.moveToThread(self._normalizer_thread)
+
+        # 连接信号到对话框
+        dialog = getattr(self.window, '_normalizer_dialog', None)
+        if dialog:
+            self._normalizer_worker.progress.connect(dialog.on_progress)
+            self._normalizer_worker.finished.connect(dialog.on_finished)
+            self._normalizer_worker.error.connect(dialog.on_error)
+
+        self._normalizer_worker.finished.connect(self._on_normalize_cleanup)
+        self._normalizer_worker.error.connect(self._on_normalize_cleanup)
+
+        self._normalizer_thread.started.connect(self._normalizer_worker.run)
+        self._normalizer_worker.finished.connect(self._normalizer_thread.quit)
+        self._normalizer_worker.error.connect(self._normalizer_thread.quit)
+        self._normalizer_worker.finished.connect(self._normalizer_worker.deleteLater)
+        self._normalizer_worker.error.connect(self._normalizer_worker.deleteLater)
+        self._normalizer_thread.finished.connect(self._normalizer_thread.deleteLater)
+
+        self._normalizer_thread.start()
+        self.window.status_bar.showMessage("正在执行 DICOM 异构数据归一化...")
+
+    def _on_normalize_cleanup(self, *_args):
+        """归一化完成后更新状态栏。"""
+        self.window.status_bar.showMessage("归一化完成")
+
+    # ---------- 插件管理 (V4.0) ----------
+
+    def _on_plugin_install(self, name: str):
+        """处理插件安装请求。"""
+        dialog = getattr(self.window, '_plugin_dialog', None)
+
+        def progress(msg: str):
+            if dialog:
+                dialog.lbl_plugin_status.setText(msg)
+            self.window.status_bar.showMessage(msg)
+
+        try:
+            ok = self.plugin_mgr.install(name, progress_callback=progress)
+            if dialog:
+                dialog.on_install_finished(name, ok)
+            if ok:
+                self.window.status_bar.showMessage(f"插件 {name} 安装成功")
+                # 安装后自动尝试加载
+                self._try_load_plugin(name)
+            else:
+                self.window.status_bar.showMessage(f"插件 {name} 安装失败")
+                QMessageBox.warning(self.window, "安装失败",
+                                    f"插件 {name} 安装失败，请检查网络连接和仓库配置。")
+        except Exception as e:
+            logger.exception(f"安装插件 {name} 异常")
+            if dialog:
+                dialog.on_install_finished(name, False)
+            QMessageBox.critical(self.window, "安装异常", str(e))
+
+    def _on_plugin_uninstall(self, name: str):
+        """处理插件卸载请求。"""
+        try:
+            ok = self.plugin_mgr.uninstall(name)
+            if ok:
+                self.window.status_bar.showMessage(f"插件 {name} 已卸载")
+                # 从菜单中移除
+                self._remove_plugin_menu_action(name)
+            else:
+                QMessageBox.warning(self.window, "卸载失败",
+                                    f"插件 {name} 卸载失败。")
+        except Exception as e:
+            logger.exception(f"卸载插件 {name} 异常")
+            QMessageBox.critical(self.window, "卸载异常", str(e))
+
+    def _on_plugin_activate(self, name: str):
+        """处理插件激活请求。"""
+        self._try_load_plugin(name)
+
+    def _try_load_plugin(self, name: str):
+        """尝试加载并激活插件，同时向工具栏插件菜单注册入口。"""
+        try:
+            instance = self.plugin_mgr.load(name, app_controller=self)
+            if hasattr(instance, "activate"):
+                instance.activate()
+            self.window.status_bar.showMessage(f"插件 {name} 已激活")
+            # 注册到工具栏插件菜单
+            self._register_plugin_menu_action(name, instance)
+        except Exception as e:
+            logger.exception(f"激活插件 {name} 失败")
+            QMessageBox.critical(self.window, "激活失败",
+                                 f"插件 {name} 激活失败:\n{e}")
+
+    def _register_plugin_menu_action(self, name: str, instance):
+        """将插件的入口动作注册到工具栏插件下拉菜单中。"""
+        # 获取插件信息用于菜单文本
+        info = self.plugin_mgr.get_local_info(name) or {}
+        display_name = info.get("description", name)
+        action = self.window.menu_plugins.addAction(display_name)
+        # 点击时调用插件的 activate
+        action.triggered.connect(lambda: self._activate_plugin_instance(name))
+        self.window._plugin_actions[name] = action
+
+    def _remove_plugin_menu_action(self, name: str):
+        """从工具栏插件菜单移除插件入口。"""
+        action = self.window._plugin_actions.pop(name, None)
+        if action:
+            self.window.menu_plugins.removeAction(action)
+
+    def _activate_plugin_instance(self, name: str):
+        """点击菜单项时激活已加载的插件实例。"""
+        instance = self.plugin_mgr.get_loaded_instance(name)
+        if instance and hasattr(instance, "activate"):
+            instance.activate()
+        else:
+            # 未加载则尝试重新加载
+            self._try_load_plugin(name)
 
     # ---------- 公共接口 ----------
 

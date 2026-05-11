@@ -116,6 +116,8 @@ def build():
         "--hidden-import", "PySide6.QtCore",
         "--hidden-import", "PySide6.QtGui",
         "--hidden-import", "PySide6.QtWidgets",
+        "--hidden-import", "plugin_manager",
+        "--hidden-import", "dicom_normalizer",
     ])
 
     # 添加 assets 目录（图标等）
