@@ -734,22 +734,23 @@ class ApplicationController(QObject):
         self.window.input_signals.local_load_finished.emit(count)
         self._refresh_study_tree()
 
-    def _on_process_and_store(self, series_list: list, target_info: dict):
+    def _on_process_and_store(self, series_list: list, target_info: dict, send_target: str = "pacs"):
         """
         用户点击"应用拆分并发送到主机"的处理流程：
         1. 从 series_list 提取文件路径
         2. 调用 processor 处理到临时目录（异步）
-        3. 在处理完成的回调中，将处理后的文件通过 C-STORE 发送到主机
+        3. 在处理完成的回调中，将处理后的文件通过 C-STORE 发送到目标节点
         """
         file_list = self._extract_files_from_series(series_list)
         if not file_list:
             QMessageBox.warning(self.window, "提示", "未获取到有效的 DICOM 文件路径")
             return
 
-        # 启动异步处理，标记后续需要发送
+        # 启动异步处理，标记后续需要发送，并记录目标节点
         output_dir = self.processor.process_for_store(file_list, target_info)
         self._pending_store_after_process = True
         self._pending_store_output_dir = output_dir
+        self._pending_store_target = send_target
 
     def _on_process_and_export(self, series_list: list, target_info: dict, output_dir: str):
         """
@@ -787,11 +788,20 @@ class ApplicationController(QObject):
                 )
                 return
 
-            # 启动 C-STORE 发送
-            self.window.status_bar.showMessage(
-                f"处理完成，正在发送 {len(processed_files)} 个文件到主机..."
-            )
-            self.network_mgr.send_files(processed_files)
+            # 根据目标节点选择发送方式
+            send_target = getattr(self, '_pending_store_target', 'pacs')
+            if send_target == 'pacs':
+                self.window.status_bar.showMessage(
+                    f"处理完成，正在发送 {len(processed_files)} 个文件到主机..."
+                )
+                self.network_mgr.send_files(processed_files)
+            elif send_target.startswith('dsa:'):
+                dsa_index = int(send_target.split(':')[1])
+                dsa_name = self.window._dsa_nodes[dsa_index].get('name', f'DSA-{dsa_index+1}')
+                self.window.status_bar.showMessage(
+                    f"处理完成，正在发送 {len(processed_files)} 个文件到 {dsa_name}..."
+                )
+                self.network_mgr.send_files_to_dsa(dsa_index, processed_files)
 
     def _on_dsa_find(self, query_dict: dict, dsa_index: int):
         """

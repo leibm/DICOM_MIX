@@ -513,6 +513,8 @@ class DicomNetworkManager(QObject):
         self._dsa_find_worker: Optional[CFindWorker] = None
         self._dsa_move_thread: Optional[QThread] = None
         self._dsa_move_worker: Optional[CMoveWorker] = None
+        self._dsa_store_thread: Optional[QThread] = None
+        self._dsa_store_worker: Optional[CStoreWorker] = None
         self._current_dsa_index: int = 0
         self._pacs_move_thread: Optional[QThread] = None
         self._pacs_move_worker: Optional[CMoveWorker] = None
@@ -643,6 +645,78 @@ class DicomNetworkManager(QObject):
         finally:
             self._store_thread = None
             self._store_worker = None
+
+    def send_files_to_dsa(self, dsa_index: int, file_list: List[str]):
+        """
+        向指定 DSA 工作站启动 C-STORE 发送任务。
+
+        参数：
+            dsa_index: DSA 节点索引（在 dsa_configs 列表中的位置）
+            file_list: 待发送的 DICOM 文件绝对路径列表
+        """
+        if not self.dsa_configs:
+            self.signals.error_occurred.emit("未配置 DSA 节点")
+            return
+        if dsa_index < 0 or dsa_index >= len(self.dsa_configs):
+            self.signals.error_occurred.emit(f"DSA 节点索引 {dsa_index} 无效")
+            return
+
+        self._cleanup_dsa_store()
+
+        dsa_config = self.dsa_configs[dsa_index]
+        self._dsa_store_thread = QThread(self)
+        self._dsa_store_worker = CStoreWorker(dsa_config, file_list)
+        self._dsa_store_worker.moveToThread(self._dsa_store_thread)
+
+        # 信号复用同一套 store_progress / store_finished
+        self._dsa_store_worker.progress.connect(self.signals.store_progress)
+        self._dsa_store_worker.finished.connect(self.signals.store_finished)
+        self._dsa_store_worker.error.connect(self.signals.error_occurred)
+
+        self._dsa_store_thread.started.connect(self._dsa_store_worker.run)
+        self._dsa_store_worker.finished.connect(self._dsa_store_thread.quit)
+        self._dsa_store_worker.finished.connect(self._dsa_store_worker.deleteLater)
+        self._dsa_store_thread.finished.connect(self._dsa_store_thread.deleteLater)
+
+        self._dsa_store_thread.start()
+        logger.info(f"已启动 DSA C-STORE (节点 {dsa_index}: {dsa_config}), 文件数: {len(file_list)}")
+
+    def _cleanup_dsa_store(self):
+        """清理之前的 DSA C-STORE 线程和信号连接。"""
+        try:
+            if self._dsa_store_thread:
+                if self._dsa_store_thread.isRunning():
+                    self._dsa_store_thread.quit()
+                    self._dsa_store_thread.wait(2000)
+                try:
+                    self._dsa_store_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_store_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._dsa_store_worker:
+                try:
+                    self._dsa_store_worker.progress.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_store_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._dsa_store_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._dsa_store_thread = None
+            self._dsa_store_worker = None
 
     # ---------- DSA C-FIND 接口 ----------
 

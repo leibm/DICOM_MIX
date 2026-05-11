@@ -1,9 +1,9 @@
-﻿; DICOM MIX Tools V3.1 安装脚本
+﻿; DICOM MIX Tools V3.2 安装脚本
 Unicode true
 !include "MUI2.nsh"
 
-Name "DICOM MIX Tools V3.1"
-OutFile "dist\DICOM_MIX_Tools_V3.1_Setup.exe"
+Name "DICOM MIX Tools V3.2"
+OutFile "dist\DICOM_MIX_Tools_V3.2_Setup.exe"
 InstallDir "$PROGRAMFILES64\DICOM_MIX_Tools"
 InstallDirRegKey HKCU "Software\DICOM_MIX_Tools" "InstallDir"
 RequestExecutionLevel admin

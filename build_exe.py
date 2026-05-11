@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本（V3.1 优化体积版）
+PyInstaller 打包脚本（V3.2 版）
 
 用法: python build_exe.py
 """
@@ -277,7 +277,7 @@ def clean_dist_extras():
 def create_archive():
     """将输出目录压缩为 zip 文件。"""
     dist_dir = "dist/DICOM_MIX_Tools"
-    zip_path = "dist/DICOM_MIX_Tools_V3.1.zip"
+    zip_path = "dist/DICOM_MIX_Tools_V3.2.zip"
     if not os.path.isdir(dist_dir):
         print("未找到打包目录，跳过压缩")
         return
@@ -302,7 +302,7 @@ def copy_readme():
 
     readme = os.path.join(dist_dir, "README.txt")
     with open(readme, "w", encoding="utf-8") as f:
-        f.write("""DICOM MIX Tools v3.1
+        f.write("""DICOM MIX Tools v3.2
 ====================
 
 DSA 图像路由与编辑工具

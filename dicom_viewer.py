@@ -173,6 +173,15 @@ QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: 
 """
 
 
+def _fmt_patient_name(val) -> str:
+    """格式化 DICOM 患者姓名字段，将 ^ 替换为空格。"""
+    if not val:
+        return ""
+    name = str(val)
+    # pydicom PersonName 可能包含 ^ 分隔符
+    return name.replace("^", " ").strip()
+
+
 class DSAViewerWidget(QWidget):
     """
     DSA 多帧图像查看器。
@@ -228,8 +237,16 @@ class DSAViewerWidget(QWidget):
         self._ww_drag_start: float = 4096.0
         self._wl_drag_start: float = 2048.0
 
+        # 右键拖动缩放状态
+        self._right_dragging: bool = False
+        self._right_drag_start: QPoint = QPoint()
+        self._right_scale_start: float = 1.0
+
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._on_next_frame)
+
+        # DICOM 标签信息（从首个文件读取，供图像角标显示）
+        self._dicom_info: dict = {}
 
     # ---------- UI 构建 ----------
 
@@ -283,12 +300,8 @@ class DSAViewerWidget(QWidget):
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setAlignment(Qt.AlignCenter)
         self.graphics_view.setStyleSheet("border: none; background-color: transparent;")
-        self.graphics_view.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.graphics_view.customContextMenuRequested.connect(
-            self._on_viewer_context_menu
-        )
 
-        # 在 viewport 上安装事件过滤器，捕获中键事件（用于调节 WW/WL）
+        # 在 viewport 上安装事件过滤器，捕获中键/右键事件
         self.graphics_view.viewport().installEventFilter(self)
 
         self.scene = QGraphicsScene(self)
@@ -381,6 +394,32 @@ class DSAViewerWidget(QWidget):
         )
         self.lbl_frame.setAlignment(Qt.AlignCenter)
         hbox.addWidget(self.lbl_frame)
+
+        # ---------- 四个角 DICOM 信息角标 ----------
+        corner_style = """
+            QLabel {
+                color: rgba(255, 255, 255, 220);
+                font-size: 11px;
+                font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+                padding: 2px 4px;
+                background-color: transparent;
+            }
+        """
+        self.lbl_corner_tl = QLabel(self.image_panel)
+        self.lbl_corner_tl.setStyleSheet(corner_style)
+        self.lbl_corner_tl.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        self.lbl_corner_tr = QLabel(self.image_panel)
+        self.lbl_corner_tr.setStyleSheet(corner_style)
+        self.lbl_corner_tr.setAlignment(Qt.AlignRight | Qt.AlignTop)
+
+        self.lbl_corner_bl = QLabel(self.image_panel)
+        self.lbl_corner_bl.setStyleSheet(corner_style)
+        self.lbl_corner_bl.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
+
+        self.lbl_corner_br = QLabel(self.image_panel)
+        self.lbl_corner_br.setStyleSheet(corner_style)
+        self.lbl_corner_br.setAlignment(Qt.AlignRight | Qt.AlignBottom)
 
         return panel
 
@@ -544,7 +583,7 @@ class DSAViewerWidget(QWidget):
         sharp_row.addWidget(self.lbl_sharp)
         b2.addLayout(sharp_row)
 
-        hint = QLabel("💡 中键拖动调节 WW/WL")
+        hint = QLabel("💡 中键拖动调节 WW/WL，右键拖动缩放")
         hint.setStyleSheet("color: #8b5cf6; font-size: 10px; padding: 2px;")
         hint.setWordWrap(True)
         b2.addWidget(hint)
@@ -642,7 +681,7 @@ class DSAViewerWidget(QWidget):
         nav_row.addWidget(self.btn_next_series)
         b3.addLayout(nav_row)
 
-        zoom_hint = QLabel("💡 滚轮缩放图像")
+        zoom_hint = QLabel("💡 滚轮切换帧")
         zoom_hint.setStyleSheet("color: #6b7280; font-size: 10px; padding: 2px;")
         b3.addWidget(zoom_hint)
 
@@ -686,6 +725,17 @@ class DSAViewerWidget(QWidget):
             margin_w, avail_h - bar_h - margin_h, avail_w - margin_w * 2, bar_h
         )
 
+        # 四个角 DICOM 角标定位（向上避开底部悬浮控制条）
+        pad = 8
+        cw = max(120, avail_w // 4)
+        ch = 48
+        bar_total_h = 52 + 6  # overlay_bar 高度 + 底部 margin
+        bottom_y = avail_h - bar_total_h - pad - ch
+        self.lbl_corner_tl.setGeometry(pad, pad, cw, ch)
+        self.lbl_corner_tr.setGeometry(avail_w - cw - pad, pad, cw, ch)
+        self.lbl_corner_bl.setGeometry(pad, bottom_y, cw, ch)
+        self.lbl_corner_br.setGeometry(avail_w - cw - pad, bottom_y, cw, ch)
+
         # 图像自适应居中
         if self._raw_frames:
             self.graphics_view.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
@@ -696,6 +746,7 @@ class DSAViewerWidget(QWidget):
     def eventFilter(self, obj, event):
         if obj is self.graphics_view.viewport():
             et = event.type()
+            # 中键：调节窗宽窗位
             if et == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
                 self._start_wwwl_drag(event.globalPosition().toPoint())
                 return True
@@ -709,18 +760,35 @@ class DSAViewerWidget(QWidget):
             ):
                 self._end_wwwl_drag()
                 return True
+            # 右键：按住拖动缩放
+            if et == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+                self._start_right_drag(event.globalPosition().toPoint())
+                return True
+            if et == QEvent.MouseMove and self._right_dragging:
+                self._update_right_drag(event.globalPosition().toPoint())
+                return True
+            if (
+                et == QEvent.MouseButtonRelease
+                and event.button() == Qt.RightButton
+                and self._right_dragging
+            ):
+                self._end_right_drag()
+                return True
         return super().eventFilter(obj, event)
 
     # ---------- 公共接口 ----------
 
     def load_series(self, file_list: List[str]):
-        """加载 DICOM 序列文件。"""
+        """加载 DICOM 序列文件，并根据序列内容自动调整默认窗宽窗位。"""
         self.clear()
         if not file_list:
             return
 
         frames: List[np.ndarray] = []
         pmin, pmax = float("inf"), float("-inf")
+        dicom_ww: Optional[float] = None
+        dicom_wl: Optional[float] = None
+        modality: str = ""
 
         total_files = len(file_list)
         for idx, fpath in enumerate(file_list, 1):
@@ -743,6 +811,35 @@ class DSAViewerWidget(QWidget):
                     frames.append(arr.copy())
                     pmin = min(pmin, float(arr.min()))
                     pmax = max(pmax, float(arr.max()))
+
+                # 从第一个成功读取的文件获取模态、DICOM 预设窗宽窗位和患者信息
+                if not modality and hasattr(ds, "Modality"):
+                    modality = str(ds.Modality).upper().strip()
+                if dicom_ww is None and hasattr(ds, "WindowWidth"):
+                    ww_val = ds.WindowWidth
+                    if isinstance(ww_val, (list, tuple)):
+                        dicom_ww = float(ww_val[0])
+                    else:
+                        dicom_ww = float(ww_val)
+                if dicom_wl is None and hasattr(ds, "WindowCenter"):
+                    wl_val = ds.WindowCenter
+                    if isinstance(wl_val, (list, tuple)):
+                        dicom_wl = float(wl_val[0])
+                    else:
+                        dicom_wl = float(wl_val)
+                if not self._dicom_info:
+                    self._dicom_info = {
+                        "patient_name": _fmt_patient_name(getattr(ds, "PatientName", "")),
+                        "patient_id": str(getattr(ds, "PatientID", "")),
+                        "study_date": str(getattr(ds, "StudyDate", "")),
+                        "series_desc": str(getattr(ds, "SeriesDescription", "")),
+                        "institution": str(getattr(ds, "InstitutionName", "")),
+                        "modality": modality,
+                        "positioner_primary_angle": str(getattr(ds, "PositionerPrimaryAngle", "")),
+                        "positioner_secondary_angle": str(getattr(ds, "PositionerSecondaryAngle", "")),
+                        "protocol_name": str(getattr(ds, "ProtocolName", "")),
+                        "sequence_name": str(getattr(ds, "SequenceName", "")),
+                    }
             except Exception as e:
                 logger.warning(f"读取失败 {fpath}: {e}")
 
@@ -755,13 +852,33 @@ class DSAViewerWidget(QWidget):
         self._mask_idx = 0
         self._auto_wwwl = True
 
-        self._wl = (pmin + pmax) / 2
-        self._ww = max(1, pmax - pmin)
-        self.sld_wl.setValue(int(self._wl))
-        self.sld_ww.setValue(int(self._ww))
-        self._update_wwwl_label()
+        # 保留整序列极值用于减影范围计算
+        seq_pmin, seq_pmax = pmin, pmax
 
-        self._global_pixel_range = max(abs(pmin), abs(pmax), 1.0)
+        # 根据模态选择默认窗宽窗位策略
+        if modality == "CT":
+            # CT：优先 DICOM 预设，否则用通用软组织窗（HU 有明确物理意义）
+            if dicom_ww is not None and dicom_wl is not None:
+                self._ww = max(1, dicom_ww)
+                self._wl = dicom_wl
+            else:
+                self._ww = 400
+                self._wl = 40
+            self.sld_wl.blockSignals(True)
+            self.sld_ww.blockSignals(True)
+            self.sld_wl.setValue(int(self._wl))
+            self.sld_ww.setValue(int(self._ww))
+            self.sld_wl.blockSignals(False)
+            self.sld_ww.blockSignals(False)
+            self.lbl_ww_val.setText(str(int(self._ww)))
+            self.lbl_wl_val.setText(str(int(self._wl)))
+            self._update_wwwl_label()
+            self.update_display()
+        else:
+            # 非 CT：直接复用 _reset_wwwl，确保效果与手动点击"重置图像"完全一致
+            self._reset_wwwl()
+
+        self._global_pixel_range = max(abs(seq_pmin), abs(seq_pmax), 1.0)
         logger.info(f"减影范围初始化: ±{self._global_pixel_range:.0f}")
 
         self.frame_slider.setRange(0, max(0, self._total_frames - 1))
@@ -770,9 +887,11 @@ class DSAViewerWidget(QWidget):
         self.btn_export.setEnabled(self._total_frames > 0)
         self.lbl_frame.setText(f"1 / {self._total_frames}")
 
-        self.update_display()
+        # 更新四个角 DICOM 角标
+        self._update_corner_labels()
+
         logger.info(
-            f"加载完成: {self._total_frames} 帧, 像素范围 [{pmin:.0f}, {pmax:.0f}]"
+            f"加载完成: {self._total_frames} 帧, 像素范围 [{seq_pmin:.0f}, {seq_pmax:.0f}]"
         )
 
     def clear(self):
@@ -785,6 +904,17 @@ class DSAViewerWidget(QWidget):
         self.btn_export.setEnabled(False)
         self.pixmap_item.setPixmap(QPixmap())
         self.scene.setSceneRect(0, 0, 0, 0)
+        # 切换序列时自动关闭实时减影、反相、锐度
+        self._subtraction_enabled = False
+        self.chk_sub.setChecked(False)
+        self._invert_enabled = False
+        self.chk_invert.setChecked(False)
+        self._sharpness = 0
+        self.sld_sharp.setValue(0)
+        self.lbl_sharp.setText("原图")
+        # 清空 DICOM 角标
+        self._dicom_info = {}
+        self._update_corner_labels()
         gc.collect()
 
     # ---------- 显示核心 ----------
@@ -818,6 +948,77 @@ class DSAViewerWidget(QWidget):
             self._auto_wwwl = False
 
         self.lbl_frame.setText(f"{self._current_idx + 1} / {self._total_frames}")
+        self._update_corner_labels()
+
+    def _update_corner_labels(self):
+        """更新图像四个角的 DICOM 信息角标。"""
+        info = self._dicom_info
+        if not info:
+            self.lbl_corner_tl.setText("")
+            self.lbl_corner_tr.setText("")
+            self.lbl_corner_bl.setText("")
+            self.lbl_corner_br.setText("")
+            return
+
+        # 左上角：患者姓名 + ID
+        name = info.get("patient_name", "")
+        pid = info.get("patient_id", "")
+        tl_text = name if name else ""
+        if pid:
+            tl_text += f"\nID: {pid}" if tl_text else f"ID: {pid}"
+        self.lbl_corner_tl.setText(tl_text)
+
+        # 右上角：检查日期 + 医院
+        date = info.get("study_date", "")
+        inst = info.get("institution", "")
+        tr_text = date if date else ""
+        if inst:
+            tr_text += f"\n{inst}" if tr_text else inst
+        self.lbl_corner_tr.setText(tr_text)
+
+        # 左下角：模态特定信息
+        mod = info.get("modality", "")
+        if mod in ("XA", "RF", "DF"):
+            # DSA：使用标准 RAO/LAO + CRA/CAU 格式显示机架角度
+            pa = info.get("positioner_primary_angle", "")
+            sa = info.get("positioner_secondary_angle", "")
+            parts = []
+            if pa != "":
+                try:
+                    pa_f = float(pa)
+                    parts.append(f"{'RAO' if pa_f >= 0 else 'LAO'} {abs(pa_f):.0f}°")
+                except ValueError:
+                    parts.append(str(pa))
+            if sa != "":
+                try:
+                    sa_f = float(sa)
+                    parts.append(f"{'CRA' if sa_f >= 0 else 'CAU'} {abs(sa_f):.0f}°")
+                except ValueError:
+                    parts.append(str(sa))
+            bl_text = " / ".join(parts) if parts else ""
+        elif mod == "MR":
+            # MR：显示序列名称
+            pn = info.get("protocol_name", "")
+            sn = info.get("sequence_name", "")
+            bl_text = pn if pn else (sn if sn else "")
+            if not bl_text:
+                bl_text = info.get("series_desc", "")
+        else:
+            # 其他：序列描述 + 模态
+            desc = info.get("series_desc", "")
+            bl_text = desc if desc else ""
+            if mod:
+                bl_text += f" [{mod}]" if bl_text else mod
+        self.lbl_corner_bl.setText(bl_text)
+
+        # 右下角：帧号 + 窗宽窗位
+        if self._total_frames > 0:
+            br_text = f"Frame {self._current_idx + 1}/{self._total_frames}"
+        else:
+            br_text = ""
+        if self._ww > 0 or self._wl != 0:
+            br_text += f"\nWW {int(self._ww)} / WL {int(self._wl)}" if br_text else f"WW {int(self._ww)} / WL {int(self._wl)}"
+        self.lbl_corner_br.setText(br_text)
 
     def _apply_window(self, frame: np.ndarray) -> np.ndarray:
         """应用窗宽窗位、反相、锐度/平滑，返回 uint8 (h, w)。"""
@@ -913,6 +1114,14 @@ class DSAViewerWidget(QWidget):
                     best_shifted = shifted
 
         return best_shifted
+
+    @staticmethod
+    def _sample_pixels(frames: List[np.ndarray]) -> np.ndarray:
+        """从帧列表中采样像素用于分布统计（大序列自动降采样，避免内存爆炸）。"""
+        if len(frames) <= 100:
+            return np.concatenate([f.ravel() for f in frames])
+        indices = np.linspace(0, len(frames) - 1, 100, dtype=int)
+        return np.concatenate([frames[i].ravel() for i in indices])
 
     def _array_to_pixmap(self, arr: np.ndarray) -> QPixmap:
         """将 uint8 (h, w) numpy 数组转为 QPixmap。"""
@@ -1100,8 +1309,13 @@ class DSAViewerWidget(QWidget):
         pmin, pmax = float(frame.min()), float(frame.max())
         self._wl = (pmin + pmax) / 2
         self._ww = max(1, pmax - pmin)
+        # block 信号避免触发 _on_wwwl_changed 导致中间状态错误
+        self.sld_ww.blockSignals(True)
+        self.sld_wl.blockSignals(True)
         self.sld_wl.setValue(int(self._wl))
         self.sld_ww.setValue(int(self._ww))
+        self.sld_ww.blockSignals(False)
+        self.sld_wl.blockSignals(False)
         self.lbl_ww_val.setText(str(int(self._ww)))
         self.lbl_wl_val.setText(str(int(self._wl)))
         self._update_wwwl_label()
@@ -1148,12 +1362,53 @@ class DSAViewerWidget(QWidget):
         self._middle_dragging = False
         self.graphics_view.unsetCursor()
 
-    # ---------- 滚轮缩放 ----------
+    # ---------- 右键拖动缩放 ----------
+
+    def _get_current_scale(self) -> float:
+        """获取当前视图变换的 X 轴缩放比例。"""
+        return self.graphics_view.transform().m11()
+
+    def _apply_scale_limit(self, target_scale: float) -> float:
+        """将目标缩放限制在 50% ~ 1000% 之间。"""
+        return max(0.5, min(10.0, target_scale))
+
+    def _start_right_drag(self, global_pos: QPoint):
+        if not self._raw_frames:
+            return
+        self._right_dragging = True
+        self._right_drag_start = global_pos
+        self._right_scale_start = self._get_current_scale()
+        self.graphics_view.setCursor(QCursor(Qt.SizeVerCursor))
+
+    def _update_right_drag(self, global_pos: QPoint):
+        if not self._right_dragging or not self._raw_frames:
+            return
+        delta = global_pos - self._right_drag_start
+        # 向上拖动放大，向下拖动缩小；每 100 像素约 2 倍变化
+        delta_y = -delta.y()
+        ratio = 1.0 + (delta_y / 200.0)
+        ratio = max(0.1, min(10.0, ratio))
+
+        new_scale = self._apply_scale_limit(self._right_scale_start * ratio)
+        current_scale = self._get_current_scale()
+        if current_scale > 0:
+            self.graphics_view.scale(new_scale / current_scale, new_scale / current_scale)
+
+    def _end_right_drag(self):
+        self._right_dragging = False
+        self.graphics_view.unsetCursor()
+
+    # ---------- 滚轮切帧 ----------
 
     def wheelEvent(self, event):
-        """鼠标滚轮缩放图像。"""
-        factor = 1.15 if event.angleDelta().y() > 0 else 0.87
-        self.graphics_view.scale(factor, factor)
+        """鼠标滚轮切换上下帧。"""
+        if not self._raw_frames or self._total_frames <= 1:
+            return
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._on_prev_frame()
+        elif delta < 0:
+            self._on_next_frame_click()
 
     # ---------- 属性 ----------
 

@@ -17,7 +17,7 @@ import sys
 import shutil
 import logging
 import socket
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Tuple
 
 logger = logging.getLogger("ui_main")
 
@@ -165,6 +165,8 @@ class StudyTreeModel(QAbstractItemModel):
     患者 (Patient) -> 序列 (Series) -> 影像实例 (Instance)
     支持复选框勾选，以决定哪些序列参与后续拆分处理。
     """
+    item_checked = Signal(QModelIndex, int)  # 复选框状态变化时通知视图更新选中
+
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self.root_item = StudyTreeItem({"name": "Root", "type": "", "count": 0})
@@ -217,12 +219,18 @@ class StudyTreeModel(QAbstractItemModel):
             return False
         item: StudyTreeItem = index.internalPointer()
         if role == Qt.CheckStateRole and index.column() == 0:
-            item.checked_state = value
+            # 确保存储统一的 Qt.CheckState 枚举值（PySide6 传入的 value 可能是 int）
+            state = Qt.CheckState(value) if isinstance(value, int) else value
+            item.checked_state = state
             # 级联更新子节点
-            self._set_children_check_state(item, value)
+            self._set_children_check_state(item, state, index)
             # 级联更新父节点（若所有子节点同态）
-            self._update_parent_check_state(item)
-            self.dataChanged.emit(QModelIndex(), QModelIndex(), [Qt.CheckStateRole])
+            self._update_parent_check_state(item, index)
+            # emit 精确范围，避免整树刷新导致折叠或选中丢失
+            self.dataChanged.emit(index, index)
+            # 通知视图联动更新高亮选中
+            state_val = state.value if hasattr(state, 'value') else int(state)
+            self.item_checked.emit(index, state_val)
             return True
         return False
 
@@ -242,31 +250,103 @@ class StudyTreeModel(QAbstractItemModel):
 
     # ---------- 辅助方法 ----------
 
-    def _set_children_check_state(self, item: StudyTreeItem, state: Qt.CheckState):
-        """递归设置所有子节点的复选状态"""
-        for child in item.children:
+    def _set_children_check_state(self, item: StudyTreeItem, state: Qt.CheckState,
+                                   parent_index: QModelIndex = QModelIndex()):
+        """递归设置所有子节点的复选状态，并为每个子节点发射 dataChanged。"""
+        for row, child in enumerate(item.children):
             child.checked_state = state
-            self._set_children_check_state(child, state)
+            child_index = self.index(row, 0, parent_index)
+            if child_index.isValid():
+                self.dataChanged.emit(child_index, child_index)
+                self._set_children_check_state(child, state, child_index)
 
-    def _update_parent_check_state(self, item: StudyTreeItem):
-        """向上级联更新父节点的复选状态"""
+    def _update_parent_check_state(self, item: StudyTreeItem, item_index: QModelIndex):
+        """向上级联更新父节点的复选状态，并发射 dataChanged。"""
         parent = item.parent
         if not parent or parent == self.root_item:
             return
         states = [c.checked_state for c in parent.children]
-        if all(s == Qt.Checked for s in states):
-            parent.checked_state = Qt.Checked
-        elif all(s == Qt.Unchecked for s in states):
-            parent.checked_state = Qt.Unchecked
+        if all(s == Qt.CheckState.Checked for s in states):
+            parent.checked_state = Qt.CheckState.Checked
+        elif all(s == Qt.CheckState.Unchecked for s in states):
+            parent.checked_state = Qt.CheckState.Unchecked
         else:
-            parent.checked_state = Qt.PartiallyChecked
-        self._update_parent_check_state(parent)
+            parent.checked_state = Qt.CheckState.PartiallyChecked
+        parent_index = self.parent(item_index)
+        if parent_index.isValid():
+            self.dataChanged.emit(parent_index, parent_index)
+            self._update_parent_check_state(parent, parent_index)
 
     def clear(self):
         """清空整棵树"""
         self.beginResetModel()
         self.root_item.children.clear()
         self.endResetModel()
+
+    def delete_studies(self, study_items: List["StudyTreeItem"]) -> int:
+        """从模型中删除指定的 Study 节点及其子节点，返回删除数量。"""
+        if not study_items:
+            return 0
+        # 去重（按对象 id）
+        unique = list({id(item): item for item in study_items}.values())
+        self.beginResetModel()
+        for item in unique:
+            if item in self.root_item.children:
+                self.root_item.children.remove(item)
+        self.endResetModel()
+        return len(unique)
+
+    def delete_items(self, studies: List["StudyTreeItem"], series: List["StudyTreeItem"]) -> Tuple[int, int]:
+        """删除指定的 Study 和 Series 节点，返回 (删除的 Study 数, 删除的 Series 数)。
+        使用 beginRemoveRows/endRemoveRows 保持视图展开状态。"""
+        from collections import defaultdict
+        removed_studies = 0
+        removed_series = 0
+
+        # --- 删除 Series（按 Study 分组，每组内按行号从大到小删） ---
+        series_by_parent: dict = defaultdict(list)
+        for s in series:
+            if s.parent:
+                series_by_parent[s.parent].append(s)
+
+        for parent, children in series_by_parent.items():
+            children.sort(key=lambda c: c.row(), reverse=True)
+            parent_idx = (
+                self.createIndex(parent.row(), 0, parent)
+                if parent != self.root_item else QModelIndex()
+            )
+            for child in children:
+                row = child.row()
+                self.beginRemoveRows(parent_idx, row, row)
+                parent.children.remove(child)
+                self.endRemoveRows()
+                removed_series += 1
+
+        # --- 删除指定的 Study（按行号从大到小） ---
+        studies_to_del = sorted(
+            [s for s in studies if s in self.root_item.children],
+            key=lambda s: s.row(), reverse=True
+        )
+        for study in studies_to_del:
+            row = study.row()
+            self.beginRemoveRows(QModelIndex(), row, row)
+            self.root_item.children.remove(study)
+            self.endRemoveRows()
+            removed_studies += 1
+
+        # --- 清理没有子节点的 Study（按行号从大到小） ---
+        empty_studies = sorted(
+            [s for s in self.root_item.children if not s.children],
+            key=lambda s: s.row(), reverse=True
+        )
+        for study in empty_studies:
+            row = study.row()
+            self.beginRemoveRows(QModelIndex(), row, row)
+            self.root_item.children.remove(study)
+            self.endRemoveRows()
+            removed_studies += 1
+
+        return removed_studies, removed_series
 
     def add_study(self, study_data: Dict):
         """
@@ -344,16 +424,16 @@ class StudyTreeModel(QAbstractItemModel):
         results = []
         for study in self.root_item.children:
             for series in study.children:
-                if series.checked_state == Qt.Checked:
+                if series.checked_state == Qt.CheckState.Checked:
                     # 整个序列被勾选
                     series_data = dict(series.data)
                     series_data["selected_instances"] = list(series_data.get("instances", []))
                     results.append(series_data)
-                elif series.checked_state == Qt.PartiallyChecked:
+                elif series.checked_state == Qt.CheckState.PartiallyChecked:
                     # 部分 Instance 被勾选
                     selected = []
                     for inst in series.children:
-                        if inst.checked_state == Qt.Checked:
+                        if inst.checked_state == Qt.CheckState.Checked:
                             fpath = inst.data.get("file_path", "")
                             if fpath:
                                 selected.append(fpath)
@@ -1303,7 +1383,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V3.1")
+        version = QLabel("版本 V3.2")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -1399,7 +1479,7 @@ class MainWindow(QMainWindow):
     request_load_local = Signal(str)       # 请求加载本地文件夹 (path)
     request_pacs_find = Signal(dict)       # 请求 C-FIND (参数字典)
     request_pacs_move = Signal(str, str)   # 请求 PACS C-MOVE (study_uid, move_dest_ae)
-    request_process_and_store = Signal(list, dict)  # (选中序列, 目标患者信息)
+    request_process_and_store = Signal(list, dict, str)  # (选中序列, 目标患者信息, 目标节点标识)
     request_process_and_export = Signal(list, dict, str)  # (选中序列, 目标患者信息, 输出目录)
     network_config_changed = Signal(dict)  # 网络配置变更通知
     temp_dir_changed = Signal(str)         # 缓存目录变更通知
@@ -1525,11 +1605,14 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # 拆分发送到主机（从底部栏移上来）
-        self.btn_send_pacs_toolbar = QPushButton("📤 拆分发送到主机")
-        self.btn_send_pacs_toolbar.setObjectName("success")
-        self.btn_send_pacs_toolbar.clicked.connect(self._on_process_and_send)
-        toolbar.addWidget(self.btn_send_pacs_toolbar)
+        # 拆分发送下拉菜单（根据网络节点动态变化）
+        self.btn_send_menu = QToolButton()
+        self.btn_send_menu.setText("📤 拆分发送 ▼")
+        self.btn_send_menu.setObjectName("success")
+        self.btn_send_menu.setPopupMode(QToolButton.InstantPopup)
+        self.menu_send_target = QMenu(self.btn_send_menu)
+        self.btn_send_menu.setMenu(self.menu_send_target)
+        toolbar.addWidget(self.btn_send_menu)
 
         # 导出到本地（从底部栏移上来）
         self.btn_export_local_toolbar = QPushButton("💾 导出到本地")
@@ -1565,12 +1648,13 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(spacer)
 
         # 右侧面板切换按钮（核心功能，更醒目）
-        self.btn_panel_patient = QPushButton("修改病人信息")
+        self.btn_panel_patient = QPushButton()
+        self.btn_panel_patient.setIcon(FluentIcon.PEOPLE.icon())
         self.btn_panel_patient.setCheckable(True)
-        self.btn_panel_patient.setObjectName("success")
-        self.btn_panel_patient.setMinimumHeight(32)
-        self.btn_panel_patient.setMinimumWidth(100)
-        self.btn_panel_patient.setStyleSheet("font-weight: 600; font-size: 13px;")
+        self.btn_panel_patient.setObjectName("panelBtn")
+        self.btn_panel_patient.setToolTip("修改病人信息")
+        self.btn_panel_patient.setFixedSize(36, 36)
+        self.btn_panel_patient.setIconSize(QSize(20, 20))
         self.btn_panel_patient.clicked.connect(lambda: self._toggle_right_panel(0))
         toolbar.addWidget(self.btn_panel_patient)
 
@@ -1651,6 +1735,10 @@ class MainWindow(QMainWindow):
         self.tree_view.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         layout.addWidget(self.tree_view)
 
+        # 右键菜单
+        self.tree_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self._on_tree_context_menu)
+
         # 连接树节点选择变化信号，联动中间 DSA 查看器
         self.tree_view.selectionModel().currentChanged.connect(self._on_tree_selection_changed)
 
@@ -1660,6 +1748,12 @@ class MainWindow(QMainWindow):
         self.btn_refresh_tree = QPushButton("刷新")
         self.btn_refresh_tree.clicked.connect(self._on_refresh_tree)
         hbox.addWidget(self.btn_refresh_tree)
+
+        self.btn_delete_tree = QPushButton("移除")
+        self.btn_delete_tree.setObjectName("danger")
+        self.btn_delete_tree.setToolTip("从列表中移除选中的病人，不删除磁盘文件")
+        self.btn_delete_tree.clicked.connect(self._on_remove_selected_studies)
+        hbox.addWidget(self.btn_delete_tree)
 
         self.btn_clear_tree_left = QPushButton("清空")
         self.btn_clear_tree_left.clicked.connect(self._on_clear_tree)
@@ -2252,6 +2346,7 @@ class MainWindow(QMainWindow):
                 self._dsa_nodes = list(DEFAULT_DSA_NODES)
 
         self._refresh_dsa_table()
+        self._refresh_send_target_menu()
 
         # 缓存目录
         temp_dir = settings.value("system/temp_dir", "")
@@ -2304,6 +2399,7 @@ class MainWindow(QMainWindow):
         self.spin_scp_port.setValue(DEFAULT_SCP_PORT)
         self._dsa_nodes = list(DEFAULT_DSA_NODES)
         self._refresh_dsa_table()
+        self._refresh_send_target_menu()
         self.edit_temp_dir.setText(DEFAULT_TEMP_DIR)
         self._on_save_network_config()
 
@@ -2363,12 +2459,25 @@ class MainWindow(QMainWindow):
                 item.setEditable(False)
             self.dsa_nodes_model.appendRow(row)
 
+    def _refresh_send_target_menu(self):
+        """刷新发送目标下拉菜单（根据网络节点动态变化）。"""
+        self.menu_send_target.clear()
+        # 主机
+        act_pacs = self.menu_send_target.addAction("📤 发送到主机")
+        act_pacs.triggered.connect(lambda checked=False, t="pacs": self._on_process_and_send(t))
+        # DSA 节点
+        for idx, node in enumerate(self._dsa_nodes):
+            name = node.get("name", f"DSA-{idx+1}")
+            act = self.menu_send_target.addAction(f"📤 发送到 {name}")
+            act.triggered.connect(lambda checked=False, t=f"dsa:{idx}": self._on_process_and_send(t))
+
     def _on_dsa_add(self):
         """添加 DSA 节点"""
         dialog = DsaNodeEditDialog(parent=self)
         if dialog.exec() == QDialog.Accepted:
             self._dsa_nodes.append(dialog.get_node())
             self._refresh_dsa_table()
+            self._refresh_send_target_menu()
 
     def _on_dsa_edit(self):
         """编辑选中的 DSA 节点"""
@@ -2383,6 +2492,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self._dsa_nodes[row] = dialog.get_node()
             self._refresh_dsa_table()
+            self._refresh_send_target_combo()
 
     def _on_dsa_delete(self):
         """删除选中的 DSA 节点"""
@@ -2403,6 +2513,7 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self._dsa_nodes.pop(row)
             self._refresh_dsa_table()
+            self._refresh_send_target_combo()
 
     def _init_bottom_bar(self):
         """底部信息栏：显示当前目标患者摘要"""
@@ -2690,6 +2801,140 @@ class MainWindow(QMainWindow):
             self.dsa_viewer.clear()
         self.status_bar.showMessage("已清空源数据列表")
 
+    def _on_tree_context_menu(self, position):
+        """左侧树列表右键菜单。"""
+        index = self.tree_view.indexAt(position)
+        if not index.isValid():
+            return
+
+        # 右键点击时选中该项
+        self.tree_view.selectionModel().setCurrentIndex(
+            index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+        )
+
+        item = index.internalPointer()
+        if not item:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1f2937;
+                color: #f9fafb;
+                border: 1px solid #374151;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #3b82f6;
+            }
+        """)
+
+        # 根据项级别显示不同文本
+        if item.parent == self.tree_model.root_item:
+            action_text = "移除该病人"
+        elif item.parent and item.parent.parent == self.tree_model.root_item:
+            action_text = "移除该序列"
+        else:
+            action_text = "移除"
+
+        action_remove = menu.addAction(action_text)
+        action_remove.triggered.connect(self._on_remove_selected_studies)
+        menu.exec(self.tree_view.viewport().mapToGlobal(position))
+
+    def _on_remove_selected_studies(self):
+        """从列表中移除勾选的 Study 或 Series 节点，不删除磁盘文件。
+        仅依据复选框勾选状态进行批量移除，与高亮选中（加载预览）互不干扰。"""
+        # 收集所有复选框 Checked 的项
+        all_items = {}
+        def _collect_checked(item):
+            if item.checked_state == Qt.CheckState.Checked:
+                all_items[id(item)] = item
+            for child in item.children:
+                _collect_checked(child)
+        _collect_checked(self.tree_model.root_item)
+
+        if not all_items:
+            QMessageBox.information(self, "提示", "请先勾选左侧列表中需要移除的数据")
+            return
+
+        studies_to_remove = []
+        series_to_remove = []
+        names = []
+
+        for item in all_items.values():
+            if item.parent == self.tree_model.root_item:
+                # Study 级别
+                if item not in studies_to_remove:
+                    studies_to_remove.append(item)
+                    names.append(item.data.get("name", "未知"))
+            elif item.parent and item.parent.parent == self.tree_model.root_item:
+                # Series 级别
+                if item not in series_to_remove:
+                    series_to_remove.append(item)
+                    names.append(
+                        f"{item.parent.data.get('name', '未知')} / {item.data.get('name', '未命名序列')}"
+                    )
+            else:
+                # Instance 级别，向上追溯到 Series
+                while item.parent and item.parent.parent != self.tree_model.root_item:
+                    item = item.parent
+                if item.parent and item.parent.parent == self.tree_model.root_item:
+                    if item not in series_to_remove:
+                        series_to_remove.append(item)
+                        names.append(
+                            f"{item.parent.data.get('name', '未知')} / {item.data.get('name', '未命名序列')}"
+                        )
+
+        # 若 Series 的父 Study 已在删除列表，则不需要单独删除该 Series
+        series_to_remove = [s for s in series_to_remove if s.parent not in studies_to_remove]
+
+        if not studies_to_remove and not series_to_remove:
+            return
+
+        names_text = "\n".join(f"  - {n}" for n in names[:10])
+        if len(names) > 10:
+            names_text += f"\n  ... 等共 {len(names)} 项"
+
+        reply = QMessageBox.question(
+            self, "确认移除",
+            f"即将从列表中移除以下数据：\n{names_text}\n\n"
+            f"磁盘文件不会被删除，刷新后仍可重新加载。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            removed_studies, removed_series = self.tree_model.delete_items(
+                studies_to_remove, series_to_remove
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "移除失败", f"删除过程中发生错误：{e}")
+            return
+
+        # 如果当前查看的序列被移除，清空 Viewer
+        if hasattr(self, 'dsa_viewer') and self.dsa_viewer:
+            self.dsa_viewer.clear()
+
+        parts = []
+        if removed_studies:
+            parts.append(f"{removed_studies} 个病人")
+        if removed_series:
+            parts.append(f"{removed_series} 个序列")
+        msg = f"已从列表中移除 {', '.join(parts)}"
+        self.status_bar.showMessage(msg)
+        QMessageBox.information(self, "完成", msg)
+
+        # 删除后清除高亮选中，避免自动跳到下一项
+        self.tree_view.selectionModel().clearSelection()
+        self.tree_view.selectionModel().clearCurrentIndex()
+
     def _on_clear_cache(self):
         """
         清除缓存：删除临时目录中的所有 DICOM 文件和子目录。
@@ -2735,7 +2980,7 @@ class MainWindow(QMainWindow):
             self._show_error(f"清除缓存失败: {e}")
 
     def _on_prev_series(self):
-        """切换到上一序列：当前序列自动取消勾选，选中上一序列。"""
+        """切换到上一序列：选中上一序列。复选框状态保持不变。"""
         current = self.tree_view.selectionModel().currentIndex()
         if not current.isValid():
             return
@@ -2752,11 +2997,6 @@ class MainWindow(QMainWindow):
             series_item = series_item.parent
         if not series_item or series_item.data.get("type", "") != "序列":
             return
-
-        # 取消勾选当前序列
-        series_item.checked_state = Qt.Unchecked
-        series_index = self.tree_model.createIndex(series_item.row(), 0, series_item)
-        self.tree_model.dataChanged.emit(series_index, series_index, [Qt.CheckStateRole])
 
         # 找上一序列（同一父节点下的前一个兄弟）
         parent = series_item.parent
@@ -2778,7 +3018,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_next_series(self):
-        """切换到下一序列：选中下一序列（自动勾选由 selection_changed 处理）。"""
+        """切换到下一序列：选中下一序列。复选框状态保持不变。"""
         current = self.tree_view.selectionModel().currentIndex()
         if not current.isValid():
             return
@@ -2817,10 +3057,8 @@ class MainWindow(QMainWindow):
 
     def _on_tree_selection_changed(self, current: QModelIndex, previous: QModelIndex):
         """
-        树节点选择变化：加载图像到 DSA 查看器，并自动勾选序列（用于拆分）。
-
-        关键修复：当用户点击选择某个序列时，自动将其复选框设为勾选状态，
-        避免用户误以为"已选择"但实际上 get_checked_series() 返回空的困惑。
+        树节点选择变化：加载图像到 DSA 查看器。
+        高亮选中（变蓝色）仅用于加载预览，与复选框勾选（标记可移除/处理）完全独立。
         """
         if not current.isValid():
             return
@@ -2838,12 +3076,7 @@ class MainWindow(QMainWindow):
             fpath = data.get("file_path", "")
             if fpath and os.path.isfile(fpath):
                 file_list = [fpath]
-                item.checked_state = Qt.Checked
-                self.tree_model.dataChanged.emit(current, current, [Qt.CheckStateRole])
         elif "序列" in node_type:
-            # 自动勾选该序列（关键：让用户点击即选中）
-            item.checked_state = Qt.Checked
-            self.tree_model.dataChanged.emit(current, current, [Qt.CheckStateRole])
             file_list = data.get("instances", [])
         elif "检查" in node_type:
             # Study 节点：收集所有子序列文件
@@ -2851,10 +3084,6 @@ class MainWindow(QMainWindow):
                 for child in item.children:
                     child_data = getattr(child, 'data', {})
                     file_list.extend(child_data.get("instances", []))
-                    # 同时勾选所有子序列
-                    child.checked_state = Qt.Checked
-                    child_index = self.tree_model.createIndex(child.row(), 0, child)
-                    self.tree_model.dataChanged.emit(child_index, child_index, [Qt.CheckStateRole])
 
         # 自动将当前选中 study 的患者信息填入底部目标摘要（作为默认值）
         self._update_target_from_tree_item(item)
@@ -3016,19 +3245,27 @@ class MainWindow(QMainWindow):
         """获取左侧树形控件中被勾选的序列"""
         return self.tree_model.get_checked_series()
 
-    def _on_process_and_send(self):
-        """点击：应用拆分并发送到主机"""
+    def _on_process_and_send(self, send_target: str = "pacs"):
+        """点击：应用拆分并发送"""
         target = self._get_target_patient_info()
         if target is None:
-            QMessageBox.warning(self, "提示", "发送到主机需要填写患者姓名、患者ID、检查号")
-            return
+            reply = QMessageBox.question(
+                self, "提示",
+                "未填写目标患者信息（姓名/ID/检查号）。\n"
+                "点击「是」将按原始患者信息发送，点击「否」返回填写。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            target = {}  # 空字典表示使用原始信息
         series_list = self._get_selected_series()
         if not series_list:
             QMessageBox.warning(self, "提示", "请先在左侧勾选需要拆分的序列")
             return
-        self.status_bar.showMessage("正在处理并发送到主机 ...")
+        self.status_bar.showMessage("正在处理并发送 ...")
         self.progress_bar.setValue(0)
-        self.request_process_and_store.emit(series_list, target)
+        self.request_process_and_store.emit(series_list, target, send_target)
 
     def _on_process_and_export(self):
         """点击：应用拆分并导出到本地"""
