@@ -277,6 +277,18 @@ class PluginManager:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 return False
 
+        # 自动安装依赖
+        deps = plugin_meta.get("dependencies", [])
+        if deps:
+            missing = self.check_dependencies(deps)
+            if missing:
+                if progress_callback:
+                    progress_callback(f"正在安装依赖: {', '.join(missing)}...")
+                logger.info(f"插件 {name} 缺少依赖，尝试安装: {missing}")
+                if not self.install_dependencies(missing):
+                    logger.warning(f"插件 {name} 依赖安装失败: {missing}")
+                    # 依赖安装失败不阻止插件安装，由插件自身在 activate 时提示用户
+
         logger.info(f"插件 {name} 安装完成")
         return True
 
