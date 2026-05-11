@@ -159,6 +159,19 @@ QSpinBox {
 }
 """
 
+# 右侧面板通用按钮样式（复用于多个控件）
+PANEL_BTN_STYLE = """
+QPushButton {
+    font-size: 12px; font-weight: 500;
+    padding: 4px 8px;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    background-color: #f9fafb; color: #374151;
+}
+QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+QPushButton:pressed { background-color: #e5e7eb; }
+QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+"""
+
 
 class DSAViewerWidget(QWidget):
     """
@@ -198,6 +211,16 @@ class DSAViewerWidget(QWidget):
 
         self._global_pixel_range: float = 1024.0
         self._sub_gain: float = 4.0
+
+        # 自动像素位移（降低减影伪影）
+        self._auto_pixel_shift: bool = False
+        self._pixel_shift_range: int = 5  # 搜索范围 ±像素
+
+        # 图像反相
+        self._invert_enabled: bool = False
+
+        # 锐度/平滑调节（-5=最平滑, 0=原图, +5=最锐化）
+        self._sharpness: int = 0
 
         # 中键调节窗宽窗位状态
         self._middle_dragging: bool = False
@@ -326,29 +349,6 @@ class DSAViewerWidget(QWidget):
         sep.setStyleSheet("background-color: rgba(255,255,255,60);")
         hbox.addWidget(sep)
 
-        # 导出按钮
-        self.btn_export = QPushButton("导出")
-        self.btn_export.setObjectName("playBtn")
-        self.btn_export.setFixedSize(48, 28)
-        self.btn_export.setToolTip("导出为 MP4 视频或 PNG 图片")
-        self.btn_export.setCursor(QCursor(Qt.PointingHandCursor))
-        self.btn_export.setFocusPolicy(Qt.NoFocus)
-        self.btn_export.setFlat(True)
-        self.btn_export.setStyleSheet("""
-            QPushButton {
-                color: rgba(255,255,255,200);
-                font-size: 11px;
-                border: 1px solid rgba(255,255,255,40);
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255,255,255,30);
-            }
-        """)
-        self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(self.export_requested.emit)
-        hbox.addWidget(self.btn_export)
-
         # 帧滑块
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setRange(0, 0)
@@ -389,155 +389,223 @@ class DSAViewerWidget(QWidget):
         panel.setStyleSheet("background-color: transparent;")
         vbox = QVBoxLayout(panel)
         vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(10)
+        vbox.setSpacing(6)
         vbox.setAlignment(Qt.AlignTop)
 
         # --- 减影控制 ---
         g1 = QGroupBox("减影控制")
         b1 = QVBoxLayout(g1)
-        b1.setSpacing(8)
+        b1.setSpacing(5)
+        b1.setContentsMargins(10, 10, 10, 8)
 
-        self.chk_sub = QCheckBox("开启实时减影")
+        # 第一行：复选框 + 蒙片按钮
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        self.chk_sub = QCheckBox("实时减影")
         self.chk_sub.setStyleSheet("font-size: 13px; font-weight: 500;")
         self.chk_sub.checkStateChanged.connect(self._on_sub_toggled)
-        b1.addWidget(self.chk_sub)
+        top_row.addWidget(self.chk_sub)
 
-        self.btn_mask = QPushButton("设为蒙片 (Mask)")
+        self.btn_mask = QPushButton("设为蒙片")
         self.btn_mask.setObjectName("maskBtn")
         self.btn_mask.setToolTip("将当前帧设为减影基准 (也可右键图像)")
         self.btn_mask.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_mask.setMinimumHeight(28)
         self.btn_mask.clicked.connect(self._set_mask)
-        b1.addWidget(self.btn_mask)
+        top_row.addWidget(self.btn_mask)
+        b1.addLayout(top_row)
 
         self.lbl_mask = QLabel("蒙片: 第 0 帧")
-        self.lbl_mask.setStyleSheet(
-            "color: #6b7280; font-size: 12px; padding-left: 2px;"
-        )
+        self.lbl_mask.setStyleSheet("color: #6b7280; font-size: 11px; padding-left: 2px;")
         b1.addWidget(self.lbl_mask)
 
+        # 增益行：固定标签宽度，统一滑块长度
         gain_row = QHBoxLayout()
-        gain_row.addWidget(QLabel("增益:"))
+        gain_row.setSpacing(6)
+        lbl_gain = QLabel("增益")
+        lbl_gain.setFixedWidth(42)
+        lbl_gain.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        gain_row.addWidget(lbl_gain)
         self.sld_gain = QSlider(Qt.Horizontal)
         self.sld_gain.setRange(1, 20)
         self.sld_gain.setValue(4)
         self.sld_gain.valueChanged.connect(self._on_gain_changed)
         gain_row.addWidget(self.sld_gain, stretch=1)
+        self.lbl_gain = QLabel("4x")
+        self.lbl_gain.setFixedWidth(36)
+        self.lbl_gain.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_gain.setStyleSheet("font-size: 11px; color: #6b7280;")
+        gain_row.addWidget(self.lbl_gain)
         b1.addLayout(gain_row)
 
-        self.lbl_gain = QLabel("4x  (范围 ±63)")
-        self.lbl_gain.setStyleSheet(
-            "color: #6b7280; font-size: 11px; padding-left: 2px;"
-        )
-        b1.addWidget(self.lbl_gain)
+        # 自动像素位移复选框单独一行
+        self.chk_auto_shift = QCheckBox("自动像素位移")
+        self.chk_auto_shift.setStyleSheet("font-size: 12px;")
+        self.chk_auto_shift.setToolTip("自动平移蒙片对齐当前帧，降低减影伪影")
+        self.chk_auto_shift.checkStateChanged.connect(self._on_auto_shift_toggled)
+        b1.addWidget(self.chk_auto_shift)
+
+        # 位移范围行
+        shift_row = QHBoxLayout()
+        shift_row.setSpacing(6)
+        lbl_shift = QLabel("范围")
+        lbl_shift.setFixedWidth(42)
+        lbl_shift.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        shift_row.addWidget(lbl_shift)
+        self.sld_shift = QSlider(Qt.Horizontal)
+        self.sld_shift.setRange(1, 10)
+        self.sld_shift.setValue(5)
+        self.sld_shift.valueChanged.connect(self._on_shift_range_changed)
+        shift_row.addWidget(self.sld_shift, stretch=1)
+        self.lbl_shift = QLabel("±5")
+        self.lbl_shift.setFixedWidth(36)
+        self.lbl_shift.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_shift.setStyleSheet("font-size: 11px; color: #6b7280;")
+        shift_row.addWidget(self.lbl_shift)
+        b1.addLayout(shift_row)
 
         vbox.addWidget(g1)
 
         # --- 窗宽窗位 ---
         g2 = QGroupBox("窗宽窗位")
         b2 = QVBoxLayout(g2)
-        b2.setSpacing(6)
+        b2.setSpacing(5)
+        b2.setContentsMargins(10, 10, 10, 8)
 
-        b2.addWidget(QLabel("窗宽 (WW):"))
+        # 窗宽行
+        ww_row = QHBoxLayout()
+        ww_row.setSpacing(6)
+        lbl_ww = QLabel("WW")
+        lbl_ww.setFixedWidth(42)
+        lbl_ww.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        ww_row.addWidget(lbl_ww)
         self.sld_ww = QSlider(Qt.Horizontal)
         self.sld_ww.setRange(1, 8192)
         self.sld_ww.setValue(4096)
         self.sld_ww.valueChanged.connect(self._on_wwwl_changed)
-        b2.addWidget(self.sld_ww)
+        ww_row.addWidget(self.sld_ww, stretch=1)
+        self.lbl_ww_val = QLabel("4096")
+        self.lbl_ww_val.setFixedWidth(36)
+        self.lbl_ww_val.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_ww_val.setStyleSheet("font-size: 11px; color: #6b7280;")
+        ww_row.addWidget(self.lbl_ww_val)
+        b2.addLayout(ww_row)
 
-        b2.addWidget(QLabel("窗位 (WL):"))
+        # 窗位行
+        wl_row = QHBoxLayout()
+        wl_row.setSpacing(6)
+        lbl_wl = QLabel("WL")
+        lbl_wl.setFixedWidth(42)
+        lbl_wl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        wl_row.addWidget(lbl_wl)
         self.sld_wl = QSlider(Qt.Horizontal)
         self.sld_wl.setRange(-2048, 8192)
         self.sld_wl.setValue(2048)
         self.sld_wl.valueChanged.connect(self._on_wwwl_changed)
-        b2.addWidget(self.sld_wl)
+        wl_row.addWidget(self.sld_wl, stretch=1)
+        self.lbl_wl_val = QLabel("2048")
+        self.lbl_wl_val.setFixedWidth(36)
+        self.lbl_wl_val.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_wl_val.setStyleSheet("font-size: 11px; color: #6b7280;")
+        wl_row.addWidget(self.lbl_wl_val)
+        b2.addLayout(wl_row)
 
         self.lbl_wwwl = QLabel("WW: 4096  WL: 2048")
-        self.lbl_wwwl.setStyleSheet(
-            "color: #6b7280; font-size: 12px; font-weight: 500; padding-left: 2px;"
-        )
+        self.lbl_wwwl.setStyleSheet("color: #6b7280; font-size: 11px; font-weight: 500; padding-left: 2px;")
         b2.addWidget(self.lbl_wwwl)
 
-        hint = QLabel("💡 鼠标中键拖动调节 WW/WL")
-        hint.setStyleSheet("color: #8b5cf6; font-size: 11px; padding: 4px 2px;")
+        # 反相行
+        invert_row = QHBoxLayout()
+        invert_row.setSpacing(6)
+        self.chk_invert = QCheckBox("图像反相")
+        self.chk_invert.setStyleSheet("font-size: 12px;")
+        self.chk_invert.setToolTip("反转图像灰度（白变黑，黑变白）")
+        self.chk_invert.checkStateChanged.connect(self._on_invert_toggled)
+        invert_row.addWidget(self.chk_invert)
+        invert_row.addStretch()
+        b2.addLayout(invert_row)
+
+        # 锐度行（标签+滑块+数值，和 WW/WL 统一）
+        sharp_row = QHBoxLayout()
+        sharp_row.setSpacing(6)
+        lbl_sharp = QLabel("锐度")
+        lbl_sharp.setFixedWidth(42)
+        lbl_sharp.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sharp_row.addWidget(lbl_sharp)
+        self.sld_sharp = QSlider(Qt.Horizontal)
+        self.sld_sharp.setRange(-5, 5)
+        self.sld_sharp.setValue(0)
+        self.sld_sharp.valueChanged.connect(self._on_sharpness_changed)
+        sharp_row.addWidget(self.sld_sharp, stretch=1)
+        self.lbl_sharp = QLabel("原图")
+        self.lbl_sharp.setFixedWidth(36)
+        self.lbl_sharp.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_sharp.setStyleSheet("font-size: 11px; color: #6b7280;")
+        sharp_row.addWidget(self.lbl_sharp)
+        b2.addLayout(sharp_row)
+
+        hint = QLabel("💡 中键拖动调节 WW/WL")
+        hint.setStyleSheet("color: #8b5cf6; font-size: 10px; padding: 2px;")
         hint.setWordWrap(True)
         b2.addWidget(hint)
 
-        self.btn_reset_wwwl = QPushButton("重置窗宽窗位")
+        self.btn_reset_wwwl = QPushButton("重置图像")
         self.btn_reset_wwwl.setObjectName("resetBtn")
         self.btn_reset_wwwl.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_reset_wwwl.setMinimumHeight(28)
         self.btn_reset_wwwl.clicked.connect(self._reset_wwwl)
         b2.addWidget(self.btn_reset_wwwl)
 
         vbox.addWidget(g2)
 
-        # --- 播放设置 ---
+        # --- 播放 ---
         g3 = QGroupBox("播放")
         b3 = QVBoxLayout(g3)
-        b3.setSpacing(6)
+        b3.setSpacing(5)
+        b3.setContentsMargins(10, 10, 10, 8)
 
-        # 帧率滑块
+        # 帧率行
         fps_row = QHBoxLayout()
-        fps_row.addWidget(QLabel("帧率:"))
+        fps_row.setSpacing(6)
+        lbl_fps = QLabel("FPS")
+        lbl_fps.setFixedWidth(42)
+        lbl_fps.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        fps_row.addWidget(lbl_fps)
         self.slider_fps = QSlider(Qt.Horizontal)
         self.slider_fps.setRange(1, 60)
         self.slider_fps.setValue(15)
         self.slider_fps.valueChanged.connect(self._on_fps_changed)
-        fps_row.addWidget(self.slider_fps)
-        self.lbl_fps = QLabel("15 FPS")
-        self.lbl_fps.setFixedWidth(55)
-        self.lbl_fps.setStyleSheet("font-size: 12px; color: #374151;")
+        fps_row.addWidget(self.slider_fps, stretch=1)
+        self.lbl_fps = QLabel("15")
+        self.lbl_fps.setFixedWidth(36)
+        self.lbl_fps.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_fps.setStyleSheet("font-size: 11px; color: #374151;")
         fps_row.addWidget(self.lbl_fps)
-        fps_row.addStretch()
         b3.addLayout(fps_row)
 
-        # 播放控制按钮
+        # 播放控制按钮（等宽排列）
         ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(6)
+        ctrl_row.addStretch()
         self.btn_panel_prev = QPushButton("◀")
-        self.btn_panel_prev.setFixedSize(36, 32)
-        self.btn_panel_prev.setStyleSheet("""
-            QPushButton {
-                font-size: 13px; font-weight: 600;
-                border: 1px solid #d1d5db; border-radius: 6px;
-                background-color: #f9fafb; color: #374151;
-            }
-            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
-            QPushButton:pressed { background-color: #e5e7eb; }
-            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
-        """)
+        self.btn_panel_prev.setFixedSize(40, 32)
+        self.btn_panel_prev.setStyleSheet(PANEL_BTN_STYLE)
         self.btn_panel_prev.setToolTip("上一帧")
         self.btn_panel_prev.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_panel_prev.clicked.connect(self._on_prev_frame)
         ctrl_row.addWidget(self.btn_panel_prev)
 
         self.btn_panel_play = QPushButton("▶")
-        self.btn_panel_play.setFixedSize(48, 32)
-        self.btn_panel_play.setStyleSheet("""
-            QPushButton {
-                font-size: 13px; font-weight: 600;
-                border: 1px solid #d1d5db; border-radius: 6px;
-                background-color: #f9fafb; color: #374151;
-            }
-            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
-            QPushButton:pressed { background-color: #e5e7eb; }
-            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
-        """)
+        self.btn_panel_play.setFixedSize(40, 32)
+        self.btn_panel_play.setStyleSheet(PANEL_BTN_STYLE)
         self.btn_panel_play.setToolTip("播放 / 暂停")
         self.btn_panel_play.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_panel_play.clicked.connect(self.toggle_play)
         ctrl_row.addWidget(self.btn_panel_play)
 
         self.btn_panel_next = QPushButton("▶")
-        self.btn_panel_next.setFixedSize(36, 32)
-        self.btn_panel_next.setStyleSheet("""
-            QPushButton {
-                font-size: 13px; font-weight: 600;
-                border: 1px solid #d1d5db; border-radius: 6px;
-                background-color: #f9fafb; color: #374151;
-            }
-            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
-            QPushButton:pressed { background-color: #e5e7eb; }
-            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
-        """)
+        self.btn_panel_next.setFixedSize(40, 32)
+        self.btn_panel_next.setStyleSheet(PANEL_BTN_STYLE)
         self.btn_panel_next.setToolTip("下一帧")
         self.btn_panel_next.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_panel_next.clicked.connect(self._on_next_frame_click)
@@ -545,46 +613,37 @@ class DSAViewerWidget(QWidget):
         ctrl_row.addStretch()
         b3.addLayout(ctrl_row)
 
-        # 序列导航按钮
+        # 导出按钮
+        self.btn_export = QPushButton("导出 MP4 / PNG")
+        self.btn_export.setStyleSheet(PANEL_BTN_STYLE)
+        self.btn_export.setToolTip("导出为 MP4 视频或 PNG 图片序列")
+        self.btn_export.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_export.setMinimumHeight(28)
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_requested.emit)
+        b3.addWidget(self.btn_export)
+
+        # 序列导航
         nav_row = QHBoxLayout()
+        nav_row.setSpacing(6)
         self.btn_prev_series = QPushButton("◀ 上一序列")
-        self.btn_prev_series.setMinimumHeight(32)
-        self.btn_prev_series.setStyleSheet("""
-            QPushButton {
-                font-size: 12px; font-weight: 500;
-                padding: 4px 10px;
-                border: 1px solid #d1d5db; border-radius: 6px;
-                background-color: #f9fafb; color: #374151;
-            }
-            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
-            QPushButton:pressed { background-color: #e5e7eb; }
-            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
-        """)
-        self.btn_prev_series.setToolTip("切换到上一序列（自动取消勾选当前序列）")
+        self.btn_prev_series.setMinimumHeight(28)
+        self.btn_prev_series.setStyleSheet(PANEL_BTN_STYLE)
+        self.btn_prev_series.setToolTip("切换到上一序列")
         self.btn_prev_series.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_prev_series.clicked.connect(self.prev_series_requested.emit)
         nav_row.addWidget(self.btn_prev_series)
         self.btn_next_series = QPushButton("下一序列 ▶")
-        self.btn_next_series.setMinimumHeight(32)
-        self.btn_next_series.setStyleSheet("""
-            QPushButton {
-                font-size: 12px; font-weight: 500;
-                padding: 4px 10px;
-                border: 1px solid #d1d5db; border-radius: 6px;
-                background-color: #f9fafb; color: #374151;
-            }
-            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
-            QPushButton:pressed { background-color: #e5e7eb; }
-            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
-        """)
-        self.btn_next_series.setToolTip("切换到下一序列（自动勾选新序列）")
+        self.btn_next_series.setMinimumHeight(28)
+        self.btn_next_series.setStyleSheet(PANEL_BTN_STYLE)
+        self.btn_next_series.setToolTip("切换到下一序列")
         self.btn_next_series.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_next_series.clicked.connect(self.next_series_requested.emit)
         nav_row.addWidget(self.btn_next_series)
         b3.addLayout(nav_row)
 
         zoom_hint = QLabel("💡 滚轮缩放图像")
-        zoom_hint.setStyleSheet("color: #6b7280; font-size: 11px; padding: 2px;")
+        zoom_hint.setStyleSheet("color: #6b7280; font-size: 10px; padding: 2px;")
         b3.addWidget(zoom_hint)
 
         vbox.addWidget(g3)
@@ -761,7 +820,7 @@ class DSAViewerWidget(QWidget):
         self.lbl_frame.setText(f"{self._current_idx + 1} / {self._total_frames}")
 
     def _apply_window(self, frame: np.ndarray) -> np.ndarray:
-        """应用窗宽窗位，返回 uint8 (h, w)。"""
+        """应用窗宽窗位、反相、锐度/平滑，返回 uint8 (h, w)。"""
         # 必须显式 copy，否则 astype 在 dtype 相同时返回原数组视图，
         # np.clip 会直接改写原始像素缓存，导致后续调节失效。
         arr = np.array(frame, dtype=np.float32, copy=True)
@@ -769,16 +828,32 @@ class DSAViewerWidget(QWidget):
         vmax = self._wl + self._ww / 2
         arr = np.clip(arr, vmin, vmax)
         arr = (arr - vmin) / max(vmax - vmin, 1.0) * 255.0
-        return arr.astype(np.uint8)
+        arr = arr.astype(np.uint8)
+
+        # 图像反相
+        if self._invert_enabled:
+            arr = 255 - arr
+
+        # 锐度/平滑调节
+        if self._sharpness != 0:
+            arr = self._apply_sharpness(arr)
+
+        return arr
 
     def _compute_subtraction(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """
         减影运算：current - mask。
         先计算差值、应用增益，再映射到 [0, 4096] 范围（中灰=2048），
         使 _apply_window 的默认参数能正确显示，同时保留窗宽窗位调节空间。
+        若启用自动像素位移，会在小范围内搜索最佳平移量对齐蒙片。
         """
         f = np.array(frame, dtype=np.float32, copy=True)
         m = np.array(mask, dtype=np.float32, copy=True)
+
+        # 自动像素位移：在 ±range 范围内搜索使差异最小的平移量
+        if self._auto_pixel_shift and self._pixel_shift_range > 0:
+            m = self._find_best_shift(f, m)
+
         diff = f - m
 
         if logger.isEnabledFor(logging.DEBUG) and self._current_idx % 10 == 0:
@@ -798,6 +873,46 @@ class DSAViewerWidget(QWidget):
         diff = np.clip(diff, -display_range, display_range)
         diff = (diff + display_range) / (2.0 * display_range) * 4096.0
         return diff
+
+    def _find_best_shift(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """
+        在 ±pixel_shift_range 像素范围内穷举搜索最佳平移量，
+        使 frame 与平移后的 mask 的绝对差值和最小。
+        返回平移后的 mask。
+        """
+        h, w = frame.shape
+        best_mse = float("inf")
+        best_shifted = mask
+        rng = self._pixel_shift_range
+
+        for dy in range(-rng, rng + 1):
+            for dx in range(-rng, rng + 1):
+                # 使用切片平移，边界用原图填充
+                shifted = np.array(mask, dtype=np.float32, copy=True)
+                if dy > 0:
+                    shifted[:dy, :] = frame[:dy, :]
+                    shifted = shifted[dy:, :]
+                    shifted = np.pad(shifted, ((0, dy), (0, 0)), mode="edge")
+                elif dy < 0:
+                    shifted[dy:, :] = frame[dy:, :]
+                    shifted = shifted[:dy, :]
+                    shifted = np.pad(shifted, ((-dy, 0), (0, 0)), mode="edge")
+
+                if dx > 0:
+                    shifted[:, :dx] = frame[:, :dx]
+                    shifted = shifted[:, dx:]
+                    shifted = np.pad(shifted, ((0, 0), (0, dx)), mode="edge")
+                elif dx < 0:
+                    shifted[:, dx:] = frame[:, dx:]
+                    shifted = shifted[:, :dx]
+                    shifted = np.pad(shifted, ((0, 0), (-dx, 0)), mode="edge")
+
+                mse = np.mean(np.abs(frame - shifted))
+                if mse < best_mse:
+                    best_mse = mse
+                    best_shifted = shifted
+
+        return best_shifted
 
     def _array_to_pixmap(self, arr: np.ndarray) -> QPixmap:
         """将 uint8 (h, w) numpy 数组转为 QPixmap。"""
@@ -872,7 +987,7 @@ class DSAViewerWidget(QWidget):
 
     def _on_fps_changed(self, val: int):
         self._fps = val
-        self.lbl_fps.setText(f"{val} FPS")
+        self.lbl_fps.setText(str(val))
         if self._is_playing:
             self._play_timer.setInterval(int(1000 / self._fps))
 
@@ -885,10 +1000,49 @@ class DSAViewerWidget(QWidget):
     def _on_gain_changed(self, value: int):
         """减影增益滑块变化。"""
         self._sub_gain = float(value)
-        display_range = self._global_pixel_range / max(self._sub_gain, 0.1)
-        self.lbl_gain.setText(f"{value}x  (范围 ±{display_range:.0f})")
+        self.lbl_gain.setText(f"{value}x")
         if self._subtraction_enabled:
             self.update_display()
+
+    def _on_auto_shift_toggled(self, state):
+        """自动像素位移开关。"""
+        self._auto_pixel_shift = state == Qt.CheckState.Checked
+        if self._subtraction_enabled:
+            self.update_display()
+
+    def _on_shift_range_changed(self, value: int):
+        """像素位移搜索范围变化。"""
+        self._pixel_shift_range = value
+        self.lbl_shift.setText(f"±{value}")
+        if self._subtraction_enabled and self._auto_pixel_shift:
+            self.update_display()
+
+    def _on_invert_toggled(self, state):
+        """图像反相开关。"""
+        self._invert_enabled = state == Qt.CheckState.Checked
+        self.update_display()
+
+    def _on_sharpness_changed(self, value: int):
+        """锐度/平滑滑块变化。"""
+        self._sharpness = value
+        labels = { -5: "最平滑", -4: "很平滑", -3: "平滑", -2: "微平滑", -1: "轻平滑",
+                    0: "原图", 1: "轻锐化", 2: "微锐化", 3: "锐化", 4: "很锐化", 5: "最锐化" }
+        self.lbl_sharp.setText(labels.get(value, str(value)))
+        self.update_display()
+
+    def _apply_sharpness(self, arr: np.ndarray) -> np.ndarray:
+        """应用锐度/平滑滤波，输入输出均为 uint8 (h, w)。"""
+        import cv2
+        if self._sharpness > 0:
+            # 锐化：unsharp mask
+            strength = self._sharpness * 0.6
+            blurred = cv2.GaussianBlur(arr, (0, 0), 1.5)
+            sharpened = cv2.addWeighted(arr, 1 + strength, blurred, -strength, 0)
+            return np.clip(sharpened, 0, 255).astype(np.uint8)
+        else:
+            # 平滑：高斯模糊
+            ksize = abs(self._sharpness) * 2 + 1
+            return cv2.GaussianBlur(arr, (ksize, ksize), 0)
 
     def _set_mask(self):
         if not self._raw_frames:
@@ -931,6 +1085,8 @@ class DSAViewerWidget(QWidget):
         self._ww = float(self.sld_ww.value())
         self._wl = float(self.sld_wl.value())
         self._update_wwwl_label()
+        self.lbl_ww_val.setText(str(int(self._ww)))
+        self.lbl_wl_val.setText(str(int(self._wl)))
         self.update_display()
 
     def _update_wwwl_label(self):
@@ -939,13 +1095,23 @@ class DSAViewerWidget(QWidget):
     def _reset_wwwl(self):
         if not self._raw_frames:
             return
+        # 重置窗宽窗位
         frame = self._raw_frames[self._current_idx]
         pmin, pmax = float(frame.min()), float(frame.max())
         self._wl = (pmin + pmax) / 2
         self._ww = max(1, pmax - pmin)
         self.sld_wl.setValue(int(self._wl))
         self.sld_ww.setValue(int(self._ww))
+        self.lbl_ww_val.setText(str(int(self._ww)))
+        self.lbl_wl_val.setText(str(int(self._wl)))
         self._update_wwwl_label()
+        # 重置反相
+        self._invert_enabled = False
+        self.chk_invert.setChecked(False)
+        # 重置锐度
+        self._sharpness = 0
+        self.sld_sharp.setValue(0)
+        self.lbl_sharp.setText("原图")
         self.update_display()
 
     # ---------- 中键调节 WW/WL ----------
