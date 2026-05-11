@@ -46,7 +46,7 @@ QGroupBox {
     padding-left: 10px;
     padding-right: 10px;
     font-weight: 600;
-    color: #1f2937;
+    color: #1a1a1a;
     font-size: 13px;
 }
 QGroupBox::title {
@@ -56,7 +56,7 @@ QGroupBox::title {
     color: #374151;
 }
 QPushButton {
-    background-color: #3b82f6;
+    background-color: #333333;
     color: white;
     border: none;
     border-radius: 8px;
@@ -65,13 +65,13 @@ QPushButton {
     font-size: 13px;
 }
 QPushButton:hover {
-    background-color: #2563eb;
+    background-color: #4a4a4a;
 }
 QPushButton:pressed {
-    background-color: #1d4ed8;
+    background-color: #2a2a2a;
 }
 QPushButton#playBtn {
-    background-color: #10b981;
+    background-color: #333333;
     color: white;
     font-size: 14px;
     border: none;
@@ -83,18 +83,18 @@ QPushButton#playBtn {
     max-height: 40px;
 }
 QPushButton#playBtn:hover {
-    background-color: #059669;
+    background-color: #4a4a4a;
     border: none;
 }
 QPushButton#playBtn:pressed {
-    background-color: #047857;
+    background-color: #2a2a2a;
     border: none;
 }
 QPushButton#playBtn:focus {
     border: none;
 }
 QToolTip {
-    background-color: #1f2937;
+    background-color: #1a1a1a;
     color: #f9fafb;
     border: 1px solid #374151;
     border-radius: 6px;
@@ -102,10 +102,10 @@ QToolTip {
     font-size: 12px;
 }
 QPushButton#maskBtn {
-    background-color: #8b5cf6;
+    background-color: #333333;
 }
 QPushButton#maskBtn:hover {
-    background-color: #7c3aed;
+    background-color: #4a4a4a;
 }
 QPushButton#resetBtn {
     background-color: #f3f4f6;
@@ -117,18 +117,18 @@ QPushButton#resetBtn:hover {
 }
 QSlider::groove:horizontal {
     height: 6px;
-    background: #e5e7eb;
+    background: #c8c8c8;
     border-radius: 3px;
 }
 QSlider::handle:horizontal {
     width: 16px;
     height: 16px;
-    background: #3b82f6;
+    background: #10b981;
     border-radius: 8px;
     margin: -5px 0;
 }
 QSlider::sub-page:horizontal {
-    background: #3b82f6;
+    background: #10b981;
     border-radius: 3px;
 }
 QCheckBox {
@@ -143,8 +143,8 @@ QCheckBox::indicator {
     border: 2px solid #d1d5db;
 }
 QCheckBox::indicator:checked {
-    background-color: #3b82f6;
-    border-color: #3b82f6;
+    background-color: #10b981;
+    border-color: #10b981;
 }
 QLabel {
     color: #4b5563;
@@ -369,7 +369,7 @@ class DSAViewerWidget(QWidget):
         self.frame_slider.setStyleSheet("""
             QSlider::groove:horizontal {
                 height: 6px;
-                background: #4b5563;
+                background: #c8c8c8;
                 border-radius: 3px;
             }
             QSlider::handle:horizontal {
@@ -584,7 +584,7 @@ class DSAViewerWidget(QWidget):
         b2.addLayout(sharp_row)
 
         hint = QLabel("💡 中键拖动调节 WW/WL，右键拖动缩放")
-        hint.setStyleSheet("color: #8b5cf6; font-size: 10px; padding: 2px;")
+        hint.setStyleSheet("color: #333333; font-size: 10px; padding: 2px;")
         hint.setWordWrap(True)
         b2.addWidget(hint)
 
@@ -1269,7 +1269,7 @@ class DSAViewerWidget(QWidget):
         menu.setStyleSheet(
             """
             QMenu {
-                background-color: #1f2937;
+                background-color: #1a1a1a;
                 color: #f9fafb;
                 border: 1px solid #374151;
                 border-radius: 6px;
@@ -1280,7 +1280,7 @@ class DSAViewerWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #3b82f6;
+                background-color: #10b981;
             }
         """
         )

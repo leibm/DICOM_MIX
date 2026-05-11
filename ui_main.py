@@ -956,7 +956,7 @@ class DsaQueryDialog(QDialog):
         else:
             self.lbl_scp_status.setText(f"✅ SCP 运行中 ({self.scp_ae_title})，可以拉取图像")
             self.lbl_scp_status.setStyleSheet(
-                "background-color: #d1fae5; color: #065f46; padding: 8px 12px;"
+                "background-color: #fef3c7; color: #92400e; padding: 8px 12px;"
                 "border-radius: 6px; font-size: 13px; font-weight: 500;"
             )
         layout.addWidget(self.lbl_scp_status)
@@ -1128,7 +1128,7 @@ class DsaQueryDialog(QDialog):
         else:
             self.lbl_scp_status.setText(f"✅ SCP 运行中 ({self.scp_ae_title})，可以拉取图像")
             self.lbl_scp_status.setStyleSheet(
-                "background-color: #d1fae5; color: #065f46; padding: 8px 12px;"
+                "background-color: #fef3c7; color: #92400e; padding: 8px 12px;"
                 "border-radius: 6px; font-size: 13px; font-weight: 500;"
             )
 
@@ -1239,7 +1239,7 @@ class HelpDialog(QDialog):
         <h2 style="color: #111827;">DSA 图像路由与编辑工具</h2>
         <p>用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。</p>
 
-        <h3 style="color: #0078d4;">功能特性</h3>
+        <h3 style="color: #333333;">功能特性</h3>
         <ul>
         <li><b>图像接收</b>：内置 DICOM SCP 服务端，可接收 DSA 设备推送的图像</li>
         <li><b>本地导入</b>：批量导入本地 DICOM 文件夹</li>
@@ -1378,12 +1378,12 @@ class AboutDialog(QDialog):
 
         # 标题
         title = QLabel("DICOM MIX Tools")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #005eb8;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #333333;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V3.2")
+        version = QLabel("版本 V3.3")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -1558,30 +1558,18 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("主工具栏")
         self.addToolBar(toolbar)
 
+        # 工具栏图标按钮统一尺寸
+        TB_BTN_SIZE = 44
+        TB_ICON_SIZE = 26
+
         # SCP 启停按钮（运行时变红）
-        self.btn_scp_toggle = QPushButton("启动 SCP 接收")
+        self.btn_scp_toggle = QPushButton()
+        self.btn_scp_toggle.setIcon(FluentIcon.CLOUD.icon())
         self.btn_scp_toggle.setCheckable(True)
-        self.btn_scp_toggle.setMinimumWidth(120)
-        self.btn_scp_toggle.setStyleSheet("""
-            QPushButton {
-                background-color: #22c55e;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background-color: #16a34a; }
-            QPushButton:pressed { background-color: #15803d; }
-            QPushButton:checked {
-                background-color: #ef4444;
-                color: white;
-            }
-            QPushButton:checked:hover { background-color: #dc2626; }
-            QPushButton:checked:pressed { background-color: #b91c1c; }
-        """)
+        self.btn_scp_toggle.setObjectName("panelBtn")
         self.btn_scp_toggle.setToolTip("启动 SCP 接收")
+        self.btn_scp_toggle.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_scp_toggle.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_scp_toggle.toggled.connect(self._on_scp_toggle)
         toolbar.addWidget(self.btn_scp_toggle)
 
@@ -1589,9 +1577,12 @@ class MainWindow(QMainWindow):
 
         # 数据载入下拉菜单（整合本地载入、主机查询、DSA查询）
         self.btn_data_load = QToolButton()
-        self.btn_data_load.setText("📥 数据载入 ▼")
-        self.btn_data_load.setObjectName("secondary")
+        self.btn_data_load.setIcon(FluentIcon.FOLDER.icon())
+        self.btn_data_load.setObjectName("panelBtn")
         self.btn_data_load.setPopupMode(QToolButton.InstantPopup)
+        self.btn_data_load.setToolTip("数据载入")
+        self.btn_data_load.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_data_load.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.menu_data_load = QMenu(self.btn_data_load)
         self.act_load_local = self.menu_data_load.addAction("📁 载入本地文件夹")
         self.act_load_local.triggered.connect(self._on_load_local)
@@ -1603,27 +1594,35 @@ class MainWindow(QMainWindow):
         self.btn_data_load.setMenu(self.menu_data_load)
         toolbar.addWidget(self.btn_data_load)
 
-        toolbar.addSeparator()
-
         # 拆分发送下拉菜单（根据网络节点动态变化）
         self.btn_send_menu = QToolButton()
-        self.btn_send_menu.setText("📤 拆分发送 ▼")
-        self.btn_send_menu.setObjectName("success")
+        self.btn_send_menu.setIcon(FluentIcon.SEND.icon())
+        self.btn_send_menu.setObjectName("panelBtn")
         self.btn_send_menu.setPopupMode(QToolButton.InstantPopup)
+        self.btn_send_menu.setToolTip("拆分发送")
+        self.btn_send_menu.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_send_menu.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.menu_send_target = QMenu(self.btn_send_menu)
         self.btn_send_menu.setMenu(self.menu_send_target)
         toolbar.addWidget(self.btn_send_menu)
 
-        # 导出到本地（从底部栏移上来）
-        self.btn_export_local_toolbar = QPushButton("💾 导出到本地")
-        self.btn_export_local_toolbar.setObjectName("secondary")
+        # 导出到本地
+        self.btn_export_local_toolbar = QPushButton()
+        self.btn_export_local_toolbar.setIcon(FluentIcon.SAVE_AS.icon())
+        self.btn_export_local_toolbar.setObjectName("panelBtn")
+        self.btn_export_local_toolbar.setToolTip("导出到本地")
+        self.btn_export_local_toolbar.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_export_local_toolbar.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_export_local_toolbar.clicked.connect(self._on_process_and_export)
         toolbar.addWidget(self.btn_export_local_toolbar)
 
-        # 清除缓存按钮（删除 temp_dicom 文件夹中的所有数据）
-        self.btn_clear_cache = QPushButton("⚠ 清除缓存")
-        self.btn_clear_cache.setObjectName("danger")
-        self.btn_clear_cache.setToolTip("删除临时目录中的所有 DICOM 文件，此操作不可恢复")
+        # 清除缓存按钮
+        self.btn_clear_cache = QPushButton()
+        self.btn_clear_cache.setIcon(FluentIcon.DELETE.icon())
+        self.btn_clear_cache.setObjectName("panelBtn")
+        self.btn_clear_cache.setToolTip("清除缓存")
+        self.btn_clear_cache.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_clear_cache.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_clear_cache.clicked.connect(self._on_clear_cache)
         toolbar.addWidget(self.btn_clear_cache)
 
@@ -1647,14 +1646,14 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
 
-        # 右侧面板切换按钮（核心功能，更醒目）
+        # 右侧面板切换按钮
         self.btn_panel_patient = QPushButton()
-        self.btn_panel_patient.setIcon(FluentIcon.PEOPLE.icon())
+        self.btn_panel_patient.setIcon(FluentIcon.EDIT.icon())
         self.btn_panel_patient.setCheckable(True)
         self.btn_panel_patient.setObjectName("panelBtn")
         self.btn_panel_patient.setToolTip("修改病人信息")
-        self.btn_panel_patient.setFixedSize(36, 36)
-        self.btn_panel_patient.setIconSize(QSize(20, 20))
+        self.btn_panel_patient.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_panel_patient.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_panel_patient.clicked.connect(lambda: self._toggle_right_panel(0))
         toolbar.addWidget(self.btn_panel_patient)
 
@@ -1663,8 +1662,8 @@ class MainWindow(QMainWindow):
         self.btn_panel_network.setCheckable(True)
         self.btn_panel_network.setObjectName("panelBtn")
         self.btn_panel_network.setToolTip("网络配置")
-        self.btn_panel_network.setFixedSize(36, 36)
-        self.btn_panel_network.setIconSize(QSize(20, 20))
+        self.btn_panel_network.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_panel_network.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_panel_network.clicked.connect(lambda: self._toggle_right_panel(1))
         toolbar.addWidget(self.btn_panel_network)
 
@@ -1673,18 +1672,20 @@ class MainWindow(QMainWindow):
         # 帮助按钮
         self.btn_help = QPushButton()
         self.btn_help.setIcon(FluentIcon.QUESTION.icon())
+        self.btn_help.setObjectName("panelBtn")
         self.btn_help.setToolTip("使用帮助")
-        self.btn_help.setFixedSize(36, 36)
-        self.btn_help.setIconSize(QSize(20, 20))
+        self.btn_help.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_help.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_help.clicked.connect(self._on_show_help)
         toolbar.addWidget(self.btn_help)
 
         # 关于按钮
         self.btn_about = QPushButton()
         self.btn_about.setIcon(FluentIcon.INFO.icon())
+        self.btn_about.setObjectName("panelBtn")
         self.btn_about.setToolTip("关于软件")
-        self.btn_about.setFixedSize(36, 36)
-        self.btn_about.setIconSize(QSize(20, 20))
+        self.btn_about.setFixedSize(TB_BTN_SIZE, TB_BTN_SIZE)
+        self.btn_about.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
         self.btn_about.clicked.connect(self._on_show_about)
         toolbar.addWidget(self.btn_about)
 
@@ -1742,20 +1743,34 @@ class MainWindow(QMainWindow):
         # 连接树节点选择变化信号，联动中间 DSA 查看器
         self.tree_view.selectionModel().currentChanged.connect(self._on_tree_selection_changed)
 
-        # 左侧底部小工具栏：刷新 + 清空
+        # 左侧底部小工具栏：刷新 + 移除 + 清空
         hbox = QHBoxLayout()
+        hbox.setSpacing(4)
 
-        self.btn_refresh_tree = QPushButton("刷新")
+        self.btn_refresh_tree = QPushButton()
+        self.btn_refresh_tree.setIcon(FluentIcon.SYNC.icon())
+        self.btn_refresh_tree.setObjectName("panelBtn")
+        self.btn_refresh_tree.setToolTip("刷新列表")
+        self.btn_refresh_tree.setFixedSize(36, 36)
+        self.btn_refresh_tree.setIconSize(QSize(20, 20))
         self.btn_refresh_tree.clicked.connect(self._on_refresh_tree)
         hbox.addWidget(self.btn_refresh_tree)
 
-        self.btn_delete_tree = QPushButton("移除")
-        self.btn_delete_tree.setObjectName("danger")
+        self.btn_delete_tree = QPushButton()
+        self.btn_delete_tree.setIcon(FluentIcon.REMOVE.icon())
+        self.btn_delete_tree.setObjectName("panelBtn")
         self.btn_delete_tree.setToolTip("从列表中移除选中的病人，不删除磁盘文件")
+        self.btn_delete_tree.setFixedSize(36, 36)
+        self.btn_delete_tree.setIconSize(QSize(20, 20))
         self.btn_delete_tree.clicked.connect(self._on_remove_selected_studies)
         hbox.addWidget(self.btn_delete_tree)
 
-        self.btn_clear_tree_left = QPushButton("清空")
+        self.btn_clear_tree_left = QPushButton()
+        self.btn_clear_tree_left.setIcon(FluentIcon.DELETE.icon())
+        self.btn_clear_tree_left.setObjectName("panelBtn")
+        self.btn_clear_tree_left.setToolTip("清空列表")
+        self.btn_clear_tree_left.setFixedSize(36, 36)
+        self.btn_clear_tree_left.setIconSize(QSize(20, 20))
         self.btn_clear_tree_left.clicked.connect(self._on_clear_tree)
         hbox.addWidget(self.btn_clear_tree_left)
         hbox.addStretch()
@@ -2135,7 +2150,7 @@ class MainWindow(QMainWindow):
 
         local_ips = self._get_local_ips()
         self.lbl_local_ip = QLabel(", ".join(local_ips))
-        self.lbl_local_ip.setStyleSheet("font-weight: bold; color: #1976D2;")
+        self.lbl_local_ip.setStyleSheet("font-weight: bold; color: #333333;")
         f0.addRow("本机 IP:", self.lbl_local_ip)
 
         self.lbl_local_scp_info = QLabel("")
@@ -2586,7 +2601,7 @@ class MainWindow(QMainWindow):
         """SCP 状态变化回调"""
         self._scp_running = running
         self.btn_scp_toggle.setChecked(running)
-        self.btn_scp_toggle.setText("停止 SCP 接收" if running else "启动 SCP 接收")
+        self.btn_scp_toggle.setIcon(FluentIcon.CLOUD_DOWNLOAD.icon() if running else FluentIcon.CLOUD.icon())
         self.btn_scp_toggle.setToolTip("停止 SCP 接收" if running else "启动 SCP 接收")
         self.status_bar.showMessage(message)
         # 实时同步到已打开的查询弹窗
@@ -2830,7 +2845,7 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #3b82f6;
+                background-color: #333333;
             }
         """)
 
@@ -2980,7 +2995,7 @@ class MainWindow(QMainWindow):
             self._show_error(f"清除缓存失败: {e}")
 
     def _on_prev_series(self):
-        """切换到上一序列：选中上一序列。复选框状态保持不变。"""
+        """切换到上一序列/影像：选中序列时切换序列，选中影像时切换影像。"""
         current = self.tree_view.selectionModel().currentIndex()
         if not current.isValid():
             return
@@ -2988,6 +3003,9 @@ class MainWindow(QMainWindow):
         item = current.internalPointer()
         if not item:
             return
+
+        # 判断当前是否选中影像节点
+        is_instance = "影像" in item.data.get("type", "")
 
         # 向上找到序列节点
         series_item = item
@@ -2998,7 +3016,20 @@ class MainWindow(QMainWindow):
         if not series_item or series_item.data.get("type", "") != "序列":
             return
 
-        # 找上一序列（同一父节点下的前一个兄弟）
+        # 只有当前选中的是影像节点时，才在同一序列下切换影像
+        if is_instance:
+            prev_row = item.row() - 1
+            if prev_row >= 0:
+                prev_instance = series_item.child(prev_row)
+                if prev_instance:
+                    prev_index = self.tree_model.createIndex(prev_row, 0, prev_instance)
+                    self.tree_view.setCurrentIndex(prev_index)
+                    self.tree_view.selectionModel().select(
+                        prev_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
+                    )
+                    return
+
+        # 切换到上一个序列（选中序列节点本身）
         parent = series_item.parent
         if not parent:
             return
@@ -3006,19 +3037,18 @@ class MainWindow(QMainWindow):
         if prev_row < 0:
             self.status_bar.showMessage("已经是第一个序列", 3000)
             return
-        prev_item = parent.child(prev_row)
-        if not prev_item:
+        prev_series = parent.child(prev_row)
+        if not prev_series:
             return
 
-        # 选中上一序列
-        prev_index = self.tree_model.createIndex(prev_row, 0, prev_item)
+        prev_index = self.tree_model.createIndex(prev_row, 0, prev_series)
         self.tree_view.setCurrentIndex(prev_index)
         self.tree_view.selectionModel().select(
             prev_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
         )
 
     def _on_next_series(self):
-        """切换到下一序列：选中下一序列。复选框状态保持不变。"""
+        """切换到下一序列/影像：选中序列时切换序列，选中影像时切换影像。"""
         current = self.tree_view.selectionModel().currentIndex()
         if not current.isValid():
             return
@@ -3026,6 +3056,9 @@ class MainWindow(QMainWindow):
         item = current.internalPointer()
         if not item:
             return
+
+        # 判断当前是否选中影像节点
+        is_instance = "影像" in item.data.get("type", "")
 
         # 向上找到序列节点
         series_item = item
@@ -3036,7 +3069,20 @@ class MainWindow(QMainWindow):
         if not series_item or series_item.data.get("type", "") != "序列":
             return
 
-        # 找下一序列（同一父节点下的后一个兄弟）
+        # 只有当前选中的是影像节点时，才在同一序列下切换影像
+        if is_instance:
+            next_row = item.row() + 1
+            if next_row < series_item.child_count():
+                next_instance = series_item.child(next_row)
+                if next_instance:
+                    next_index = self.tree_model.createIndex(next_row, 0, next_instance)
+                    self.tree_view.setCurrentIndex(next_index)
+                    self.tree_view.selectionModel().select(
+                        next_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
+                    )
+                    return
+
+        # 切换到下一个序列（选中序列节点本身）
         parent = series_item.parent
         if not parent:
             return
@@ -3044,12 +3090,11 @@ class MainWindow(QMainWindow):
         if next_row >= parent.child_count():
             self.status_bar.showMessage("已经是最后一个序列", 3000)
             return
-        next_item = parent.child(next_row)
-        if not next_item:
+        next_series = parent.child(next_row)
+        if not next_series:
             return
 
-        # 选中下一序列（自动勾选）
-        next_index = self.tree_model.createIndex(next_row, 0, next_item)
+        next_index = self.tree_model.createIndex(next_row, 0, next_series)
         self.tree_view.setCurrentIndex(next_index)
         self.tree_view.selectionModel().select(
             next_index, QAbstractItemView.ClearAndSelect | QAbstractItemView.Rows
