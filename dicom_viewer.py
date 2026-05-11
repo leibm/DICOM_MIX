@@ -475,16 +475,75 @@ class DSAViewerWidget(QWidget):
         b3 = QVBoxLayout(g3)
         b3.setSpacing(6)
 
+        # 帧率滑块
         fps_row = QHBoxLayout()
         fps_row.addWidget(QLabel("帧率:"))
-        self.spin_fps = QSpinBox()
-        self.spin_fps.setRange(1, 60)
-        self.spin_fps.setValue(15)
-        self.spin_fps.setSuffix(" FPS")
-        self.spin_fps.valueChanged.connect(self._on_fps_changed)
-        fps_row.addWidget(self.spin_fps)
+        self.slider_fps = QSlider(Qt.Horizontal)
+        self.slider_fps.setRange(1, 60)
+        self.slider_fps.setValue(15)
+        self.slider_fps.valueChanged.connect(self._on_fps_changed)
+        fps_row.addWidget(self.slider_fps)
+        self.lbl_fps = QLabel("15 FPS")
+        self.lbl_fps.setFixedWidth(55)
+        self.lbl_fps.setStyleSheet("font-size: 12px; color: #374151;")
+        fps_row.addWidget(self.lbl_fps)
         fps_row.addStretch()
         b3.addLayout(fps_row)
+
+        # 播放控制按钮
+        ctrl_row = QHBoxLayout()
+        self.btn_panel_prev = QPushButton("◀")
+        self.btn_panel_prev.setFixedSize(36, 32)
+        self.btn_panel_prev.setStyleSheet("""
+            QPushButton {
+                font-size: 13px; font-weight: 600;
+                border: 1px solid #d1d5db; border-radius: 6px;
+                background-color: #f9fafb; color: #374151;
+            }
+            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+            QPushButton:pressed { background-color: #e5e7eb; }
+            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+        """)
+        self.btn_panel_prev.setToolTip("上一帧")
+        self.btn_panel_prev.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_panel_prev.clicked.connect(self._on_prev_frame)
+        ctrl_row.addWidget(self.btn_panel_prev)
+
+        self.btn_panel_play = QPushButton("▶")
+        self.btn_panel_play.setFixedSize(48, 32)
+        self.btn_panel_play.setStyleSheet("""
+            QPushButton {
+                font-size: 13px; font-weight: 600;
+                border: 1px solid #d1d5db; border-radius: 6px;
+                background-color: #f9fafb; color: #374151;
+            }
+            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+            QPushButton:pressed { background-color: #e5e7eb; }
+            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+        """)
+        self.btn_panel_play.setToolTip("播放 / 暂停")
+        self.btn_panel_play.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_panel_play.clicked.connect(self.toggle_play)
+        ctrl_row.addWidget(self.btn_panel_play)
+
+        self.btn_panel_next = QPushButton("▶")
+        self.btn_panel_next.setFixedSize(36, 32)
+        self.btn_panel_next.setStyleSheet("""
+            QPushButton {
+                font-size: 13px; font-weight: 600;
+                border: 1px solid #d1d5db; border-radius: 6px;
+                background-color: #f9fafb; color: #374151;
+            }
+            QPushButton:hover { background-color: #f3f4f6; border-color: #9ca3af; }
+            QPushButton:pressed { background-color: #e5e7eb; }
+            QPushButton:disabled { color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb; }
+        """)
+        self.btn_panel_next.setToolTip("下一帧")
+        self.btn_panel_next.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_panel_next.clicked.connect(self._on_next_frame_click)
+        ctrl_row.addWidget(self.btn_panel_next)
+        ctrl_row.addStretch()
+        b3.addLayout(ctrl_row)
 
         # 序列导航按钮
         nav_row = QHBoxLayout()
@@ -763,11 +822,13 @@ class DSAViewerWidget(QWidget):
             return
         self._is_playing = True
         self.btn_play.setText("⏸")
+        self.btn_panel_play.setText("⏸")
         self._play_timer.start(int(1000 / self._fps))
 
     def stop(self):
         self._is_playing = False
         self.btn_play.setText("▶")
+        self.btn_panel_play.setText("▶")
         self._play_timer.stop()
 
     def _on_next_frame(self):
@@ -811,6 +872,7 @@ class DSAViewerWidget(QWidget):
 
     def _on_fps_changed(self, val: int):
         self._fps = val
+        self.lbl_fps.setText(f"{val} FPS")
         if self._is_playing:
             self._play_timer.setInterval(int(1000 / self._fps))
 
