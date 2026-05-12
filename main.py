@@ -21,6 +21,11 @@ DICOM MIX Tools 的主入口，职责如下：
 
 import sys
 import os
+
+# 强制指定 Qt 后端为 PySide6，避免 QtPy 等中间层绑定检测失败
+# 必须在任何 Qt 相关导入之前设置
+os.environ["QT_API"] = "pyside6"
+
 import logging
 
 logger = logging.getLogger("main")

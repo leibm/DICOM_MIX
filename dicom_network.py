@@ -132,44 +132,98 @@ class CFindWorker(QObject):
         }
         return mapping.get(date_range.upper(), date_range)
 
+    def _build_query_dataset(self) -> Dataset:
+        """根据用户输入构建查询数据集，兼容大多数 DSA/PACS 设备。"""
+        ds = Dataset()
+        ds.QueryRetrieveLevel = "STUDY"
+
+        # 过滤键：有值时用精确匹配，空值时用 * 通配符（比省略键或发空字符串更兼容）
+        patient_name = self.query_params.get("patient_name", "").strip()
+        ds.PatientName = patient_name if patient_name else "*"
+
+        patient_id = self.query_params.get("patient_id", "").strip()
+        ds.PatientID = patient_id if patient_id else "*"
+
+        accession = self.query_params.get("accession_number", "").strip()
+        ds.AccessionNumber = accession if accession else "*"
+
+        # 返回键：精简到最通用的几个，避免设备因不支持某些返回键而整盘拒绝
+        ds.StudyInstanceUID = ""
+        ds.StudyDate = ""
+        ds.StudyDescription = ""
+        ds.PatientSex = ""
+        ds.PatientBirthDate = ""
+
+        # 日期范围
+        date_range = self.query_params.get("study_date_range", "").strip()
+        if date_range:
+            ds.StudyDate = self._format_study_date(date_range)
+        else:
+            ds.StudyDate = "*"  # 无日期限制时显式发通配符
+
+        # 模态（DSA 设备常用过滤条件）
+        modality = self.query_params.get("modality", "").strip()
+        if modality:
+            ds.Modality = modality
+
+        return ds
+
+    def _send_c_find(self, assoc, ds: Dataset, query_model) -> list:
+        """发送 C-FIND 请求并解析响应，返回结果列表。"""
+        results = []
+        responses = assoc.send_c_find(ds, query_model)
+        for status, identifier in responses:
+            if not status:
+                continue
+            if status.Status == 0xFF00:  # Pending（匹配结果）
+                if identifier is not None:
+                    patient_age = str(getattr(identifier, "PatientAge", ""))
+                    patient_birth_date = str(getattr(identifier, "PatientBirthDate", ""))
+                    if not patient_age and patient_birth_date and len(patient_birth_date) == 8:
+                        try:
+                            from datetime import datetime
+                            birth = datetime.strptime(patient_birth_date, "%Y%m%d")
+                            today = datetime.now()
+                            age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+                            patient_age = f"{age:03d}Y"
+                        except Exception:
+                            pass
+                    result = {
+                        "patient_name": str(getattr(identifier, "PatientName", "")),
+                        "patient_id": str(getattr(identifier, "PatientID", "")),
+                        "accession_number": str(getattr(identifier, "AccessionNumber", "")),
+                        "study_instance_uid": str(getattr(identifier, "StudyInstanceUID", "")),
+                        "study_date": str(getattr(identifier, "StudyDate", "")),
+                        "study_description": str(getattr(identifier, "StudyDescription", "")),
+                        "patient_sex": str(getattr(identifier, "PatientSex", "")),
+                        "patient_age": patient_age,
+                        "patient_birth_date": patient_birth_date,
+                    }
+                    results.append(result)
+            elif status.Status == 0x0000:  # Success
+                logger.info(f"C-FIND 查询完成，共 {len(results)} 条记录")
+            elif status.Status == 0xFF01:  # Pending with warning
+                logger.warning(f"C-FIND 警告状态: 0x{status.Status:04X}")
+            else:
+                error_msg = f"C-FIND 失败，状态码: 0x{status.Status:04X}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+        return results
+
     def run(self):
-        """执行 C-FIND 查询。"""
+        """执行 C-FIND 查询，Study Root 失败时回退到 Patient Root。"""
         try:
             logger.info(f"开始 C-FIND 查询: {self.query_params} -> {self.pacs}")
 
-            # 1. 创建 Application Entity（本机 SCU）
-            ae = AE(ae_title=self.pacs.local_ae_title)
+            ds = self._build_query_dataset()
+            logger.debug(f"C-FIND 查询数据集: {ds}")
 
-            # 2. 添加查询上下文（支持 Patient Root 和 Study Root）
-            # 通常主机至少支持其中一种
+            # 创建 Application Entity
+            ae = AE(ae_title=self.pacs.local_ae_title)
             ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
 
-            # 3. 构建查询数据集（Query Dataset）
-            # 使用 Study Root 模型进行查询，级别为 STUDY
-            ds = Dataset()
-            ds.QueryRetrieveLevel = "STUDY"
-
-            # 设置查询关键字（空白表示通配/返回）
-            # 注意：主机对模糊查询的支持取决于具体实现
-            ds.PatientName = self.query_params.get("patient_name", "")
-            ds.PatientID = self.query_params.get("patient_id", "")
-            ds.AccessionNumber = self.query_params.get("accession_number", "")
-            ds.StudyInstanceUID = ""  # 留空表示返回所有匹配的 StudyUID
-            ds.StudyDate = self._format_study_date(
-                self.query_params.get("study_date_range", "")
-            )
-            ds.StudyTime = ""
-            ds.StudyDescription = ""
-            ds.NumberOfStudyRelatedSeries = ""
-            ds.NumberOfStudyRelatedInstances = ""
-            ds.PatientSex = ""
-            ds.PatientAge = ""
-            ds.PatientBirthDate = ""
-
-            # 4. 建立关联（Association）
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
-
             if not assoc.is_established:
                 error_msg = f"无法连接到主机: {self.pacs.ae_title}@{self.pacs.host}:{self.pacs.port}"
                 logger.error(error_msg)
@@ -178,49 +232,14 @@ class CFindWorker(QObject):
 
             results = []
             try:
-                # 5. 发送 C-FIND 请求
-                # 优先尝试 Study Root 模型
-                responses = assoc.send_c_find(ds, StudyRootQueryRetrieveInformationModelFind)
+                # 先尝试 Study Root
+                logger.info("尝试 Study Root C-FIND...")
+                results = self._send_c_find(assoc, ds, StudyRootQueryRetrieveInformationModelFind)
 
-                for status, identifier in responses:
-                    if not status:
-                        continue
-                    if status.Status == 0xFF00:  # Pending（匹配结果）
-                        if identifier is not None:
-                            patient_age = str(getattr(identifier, "PatientAge", ""))
-                            patient_birth_date = str(getattr(identifier, "PatientBirthDate", ""))
-                            # 若主机不返回 PatientAge，则根据出生日期自动计算
-                            if not patient_age and patient_birth_date and len(patient_birth_date) == 8:
-                                try:
-                                    from datetime import datetime
-                                    birth = datetime.strptime(patient_birth_date, "%Y%m%d")
-                                    today = datetime.now()
-                                    age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
-                                    patient_age = f"{age:03d}Y"
-                                except Exception:
-                                    pass
-                            result = {
-                                "patient_name": str(getattr(identifier, "PatientName", "")),
-                                "patient_id": str(getattr(identifier, "PatientID", "")),
-                                "accession_number": str(getattr(identifier, "AccessionNumber", "")),
-                                "study_instance_uid": str(getattr(identifier, "StudyInstanceUID", "")),
-                                "study_date": str(getattr(identifier, "StudyDate", "")),
-                                "study_description": str(getattr(identifier, "StudyDescription", "")),
-                                "patient_sex": str(getattr(identifier, "PatientSex", "")),
-                                "patient_age": patient_age,
-                                "patient_birth_date": patient_birth_date,
-                            }
-                            results.append(result)
-                            logger.debug(f"C-FIND 匹配结果: {result}")
-                    elif status.Status == 0x0000:  # Success（查询完成）
-                        logger.info(f"C-FIND 查询完成，共 {len(results)} 条记录")
-                    elif status.Status in (0xFF01,):  # Pending with warning
-                        logger.warning(f"C-FIND 警告状态: 0x{status.Status:04X}")
-                    else:  # 覆盖所有拒绝/失败状态码 (0xAxxx, 0xBxxx, 0xCxxx, 0xFxxx)
-                        error_msg = f"C-FIND 失败，状态码: 0x{status.Status:04X}"
-                        logger.error(error_msg)
-                        self.error.emit(error_msg)
-                        return
+                # Study Root 返回 0 条时，回退到 Patient Root（同一数据集，换 SOP Class）
+                if not results:
+                    logger.info("Study Root 无结果，回退到 Patient Root...")
+                    results = self._send_c_find(assoc, ds, PatientRootQueryRetrieveInformationModelFind)
 
             finally:
                 assoc.release()
@@ -393,17 +412,83 @@ class CMoveWorker(QObject):
         self.study_uid = study_uid
         self.move_dest = move_dest
 
+    def _execute_c_move(self, assoc, ds, query_model) -> tuple:
+        """
+        执行 C-MOVE 请求并跟踪进度。
+        返回 (completed, total, success, error_msg)
+        """
+        max_completed = 0
+        max_total = 0
+        pending_count = 0
+        final_found = False
+        error_msg = None
+
+        responses = assoc.send_c_move(ds, self.move_dest, query_model=query_model)
+
+        for status, identifier in responses:
+            if not status:
+                continue
+            logger.info(f"C-MOVE 响应: status=0x{status.Status:04X}")
+            if status.Status == 0xFF00:
+                pending_count += 1
+                if identifier:
+                    completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
+                    remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
+                    total_ops = completed + remaining
+                    max_completed = max(max_completed, completed)
+                    if total_ops > 0:
+                        max_total = max(max_total, total_ops)
+                    elif completed > 0:
+                        max_total = max(max_total, completed)
+                    self.progress.emit(completed, max(total_ops, 1))
+            elif status.Status in (0x0000, 0xB000):
+                final_found = True
+                if identifier:
+                    completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
+                    failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
+                    total_ops = completed + failed
+                    max_completed = max(max_completed, completed)
+                    if total_ops > 0:
+                        max_total = max(max_total, total_ops)
+                    elif completed > 0:
+                        max_total = max(max_total, completed)
+                    if max_completed == 0 and pending_count > 0:
+                        max_completed = pending_count
+                else:
+                    if max_completed == 0 and pending_count > 0:
+                        max_completed = pending_count
+                return max_completed, max(max_total, max_completed, 1), True, None
+            elif status.Status == 0xFF01:
+                continue
+            else:
+                error_msg = f"C-MOVE 失败，状态码: 0x{status.Status:04X}"
+                logger.error(error_msg)
+                return 0, 0, False, error_msg
+
+        if not final_found:
+            if max_completed == 0 and pending_count > 0:
+                max_completed = pending_count
+            logger.warning(f"C-MOVE 未收到最终状态，使用跟踪计数: {max_completed}/{max_total}")
+            return max_completed, max(max_total, max_completed, 1), True, None
+
+        return max_completed, max(max_total, max_completed, 1), True, None
+
     def run(self):
-        """执行 C-MOVE 请求。"""
+        """执行 C-MOVE 请求，Study Root 失败时回退到 Patient Root。"""
         ae = None
         assoc = None
         try:
             logger.info(f"开始 C-MOVE: study={self.study_uid}, 目标={self.move_dest}")
-            ae = AE(ae_title=self.remote.local_ae_title)
 
-            # 添加 C-MOVE 上下文
-            from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelMove
+            from pynetdicom.sop_class import (
+                StudyRootQueryRetrieveInformationModelMove,
+                PatientRootQueryRetrieveInformationModelMove,
+            )
+            from pydicom import Dataset
+
+            ae = AE(ae_title=self.remote.local_ae_title)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
+            ae.add_requested_context(PatientRootQueryRetrieveInformationModelMove)
 
             assoc = ae.associate(
                 self.remote.host, self.remote.port,
@@ -415,80 +500,32 @@ class CMoveWorker(QObject):
                 self.error.emit(error_msg)
                 return
 
-            # 构建 C-MOVE 请求数据集
-            from pydicom import Dataset
             ds = Dataset()
             ds.QueryRetrieveLevel = "STUDY"
             ds.StudyInstanceUID = self.study_uid
 
-            # 发送 C-MOVE，move_dest 是目标 AE Title
-            responses = assoc.send_c_move(
-                ds, self.move_dest,
-                query_model=StudyRootQueryRetrieveInformationModelMove
-            )
+            try:
+                # 先尝试 Study Root
+                logger.info("尝试 Study Root C-MOVE...")
+                completed, total, success, error_msg = self._execute_c_move(
+                    assoc, ds, StudyRootQueryRetrieveInformationModelMove
+                )
 
-            max_completed = 0
-            max_total = 0
-            pending_count = 0
-            final_found = False
-            for status, identifier in responses:
-                if not status:
-                    continue
-                logger.info(f"C-MOVE 响应: status=0x{status.Status:04X}")
-                if status.Status == 0xFF00:
-                    # Pending - operation in progress
-                    pending_count += 1
-                    if identifier:
-                        completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
-                        remaining = getattr(identifier, 'NumberOfRemainingSuboperations', 0) or 0
-                        total_ops = completed + remaining
-                        # 即使远端不返回 remaining，只要有 completed 就更新计数
-                        max_completed = max(max_completed, completed)
-                        if total_ops > 0:
-                            max_total = max(max_total, total_ops)
-                        elif completed > 0:
-                            # 远端不返回 remaining 时，用 completed 作为总数估计
-                            max_total = max(max_total, completed)
-                        self.progress.emit(completed, max(total_ops, 1))
-                elif status.Status in (0x0000, 0xB000):
-                    # 0x0000 = 成功完成, 0xB000 = 完成但有部分警告
-                    final_found = True
-                    if identifier:
-                        completed = getattr(identifier, 'NumberOfCompletedSuboperations', 0) or 0
-                        failed = getattr(identifier, 'NumberOfFailedSuboperations', 0) or 0
-                        total_ops = completed + failed
-                        max_completed = max(max_completed, completed)
-                        if total_ops > 0:
-                            max_total = max(max_total, total_ops)
-                        elif completed > 0:
-                            max_total = max(max_total, completed)
-                        if max_completed == 0 and pending_count > 0:
-                            max_completed = pending_count
-                        self.finished.emit(max_completed, max(max_total, max_completed, 1))
-                    else:
-                        # 最终响应通常不带 identifier，使用跟踪的最大值
-                        if max_completed == 0 and pending_count > 0:
-                            max_completed = pending_count
-                        self.finished.emit(max_completed, max(max_total, max_completed, 1))
-                    break
-                elif status.Status == 0xFF01:
-                    # Pending with warning，忽略
-                    continue
+                # Study Root 失败时回退到 Patient Root
+                if not success:
+                    logger.info("Study Root C-MOVE 失败，回退到 Patient Root...")
+                    completed, total, success, error_msg = self._execute_c_move(
+                        assoc, ds, PatientRootQueryRetrieveInformationModelMove
+                    )
+
+                if success:
+                    self.finished.emit(completed, total)
                 else:
-                    # 失败状态 (0xAxxx, 0xCxxx, 0xFxxx 等)
-                    error_msg = f"C-MOVE 失败，状态码: 0x{status.Status:04X}"
-                    logger.error(error_msg)
                     self.error.emit(error_msg)
-                    return
 
-            # 如果循环正常结束（未 break），说明未收到明确的最终状态，兜底上报
-            if not final_found:
-                if max_completed == 0 and pending_count > 0:
-                    max_completed = pending_count
-                logger.warning(f"C-MOVE 未收到最终状态，使用跟踪计数: {max_completed}/{max_total}")
-                self.finished.emit(max_completed, max(max_total, max_completed, 1))
-
-            logger.info("C-MOVE 请求完成")
+            finally:
+                if assoc.is_established:
+                    assoc.release()
 
         except Exception as e:
             logger.exception("C-MOVE 异常")
