@@ -18,3 +18,4 @@ processed/
 *.swo
 *~
 .claude/
+plugins/
