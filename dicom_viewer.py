@@ -17,6 +17,7 @@ DSA 图像查看器模块
 import gc
 import logging
 from typing import List, Optional
+from collections import OrderedDict
 
 import numpy as np
 from pydicom import dcmread
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
     QLabel, QCheckBox, QGroupBox, QSpinBox, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QMenu, QSizePolicy
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QPoint, QEvent
+from PySide6.QtCore import Qt, QTimer, Signal, QPoint, QEvent, QThread, QObject
 from PySide6.QtGui import QImage, QPixmap, QPainter, QCursor
 
 logger = logging.getLogger("dicom_viewer")
@@ -182,6 +183,120 @@ def _fmt_patient_name(val) -> str:
     return name.replace("^", " ").strip()
 
 
+class LoadSeriesWorker(QObject):
+    """后台线程：扫描 DICOM 文件列表，构建帧元数据。"""
+    progress = Signal(int, int)   # (current, total)
+    finished = Signal(list, float, float, object, object, str, dict, object)
+    # sources, pmin, pmax, dicom_ww, dicom_wl, modality, dicom_info, first_frame
+    error = Signal(str)
+
+    def __init__(self, file_list: List[str], parent=None):
+        super().__init__(parent)
+        self._file_list = file_list
+
+    def run(self):
+        sources: List[dict] = []
+        pmin, pmax = float("inf"), float("-inf")
+        dicom_ww: Optional[float] = None
+        dicom_wl: Optional[float] = None
+        modality: str = ""
+        dicom_info: dict = {}
+        first_frame = None
+
+        total_files = len(self._file_list)
+        for idx, fpath in enumerate(self._file_list, 1):
+            self.progress.emit(idx, total_files)
+            try:
+                ds = dcmread(fpath, stop_before_pixels=True)
+                slope = float(getattr(ds, "RescaleSlope", 1))
+                intercept = float(getattr(ds, "RescaleIntercept", 0))
+                nframes = int(getattr(ds, "NumberOfFrames", 1))
+                rows = int(getattr(ds, "Rows", 0))
+                cols = int(getattr(ds, "Columns", 0))
+
+                if not modality and hasattr(ds, "Modality"):
+                    modality = str(ds.Modality).upper().strip()
+                if dicom_ww is None and hasattr(ds, "WindowWidth"):
+                    ww_val = ds.WindowWidth
+                    dicom_ww = float(ww_val[0] if isinstance(ww_val, (list, tuple)) else ww_val)
+                if dicom_wl is None and hasattr(ds, "WindowCenter"):
+                    wl_val = ds.WindowCenter
+                    dicom_wl = float(wl_val[0] if isinstance(wl_val, (list, tuple)) else wl_val)
+                if not dicom_info:
+                    dicom_info = {
+                        "patient_name": _fmt_patient_name(getattr(ds, "PatientName", "")),
+                        "patient_id": str(getattr(ds, "PatientID", "")),
+                        "patient_sex": str(getattr(ds, "PatientSex", "")),
+                        "patient_age": str(getattr(ds, "PatientAge", "")),
+                        "study_date": str(getattr(ds, "StudyDate", "")),
+                        "series_desc": str(getattr(ds, "SeriesDescription", "")),
+                        "institution": str(getattr(ds, "InstitutionName", "")),
+                        "modality": modality,
+                        "positioner_primary_angle": str(getattr(ds, "PositionerPrimaryAngle", "")),
+                        "positioner_secondary_angle": str(getattr(ds, "PositionerSecondaryAngle", "")),
+                        "protocol_name": str(getattr(ds, "ProtocolName", "")),
+                        "sequence_name": str(getattr(ds, "SequenceName", "")),
+                    }
+
+                if nframes == 1 and rows > 0 and cols > 0:
+                    sources.append({
+                        "file_path": fpath,
+                        "slice_idx": 0,
+                        "slope": slope,
+                        "intercept": intercept,
+                        "shape": (rows, cols),
+                    })
+                    if first_frame is None:
+                        ds_full = dcmread(fpath, stop_before_pixels=False)
+                        arr = ds_full.pixel_array
+                        if slope != 1 or intercept != 0:
+                            arr = arr.astype(np.float32) * slope + intercept
+                        first_frame = arr
+                        pmin = min(pmin, float(arr.min()))
+                        pmax = max(pmax, float(arr.max()))
+                else:
+                    ds_full = dcmread(fpath, stop_before_pixels=False)
+                    arr = ds_full.pixel_array
+                    if arr.ndim == 3:
+                        for i in range(arr.shape[0]):
+                            sources.append({
+                                "file_path": fpath,
+                                "slice_idx": i,
+                                "slope": slope,
+                                "intercept": intercept,
+                                "shape": (rows, cols),
+                            })
+                            if first_frame is None:
+                                frame_arr = arr[i]
+                                if slope != 1 or intercept != 0:
+                                    frame_arr = frame_arr.astype(np.float32) * slope + intercept
+                                first_frame = frame_arr
+                                pmin = min(pmin, float(frame_arr.min()))
+                                pmax = max(pmax, float(frame_arr.max()))
+                    elif arr.ndim == 2:
+                        sources.append({
+                            "file_path": fpath,
+                            "slice_idx": 0,
+                            "slope": slope,
+                            "intercept": intercept,
+                            "shape": (rows, cols),
+                        })
+                        if first_frame is None:
+                            if slope != 1 or intercept != 0:
+                                arr = arr.astype(np.float32) * slope + intercept
+                            first_frame = arr
+                            pmin = min(pmin, float(arr.min()))
+                            pmax = max(pmax, float(arr.max()))
+            except Exception as e:
+                logger.warning(f"读取失败 {fpath}: {e}")
+
+        if not sources:
+            self.error.emit("没有可加载的有效帧")
+            return
+
+        self.finished.emit(sources, pmin, pmax, dicom_ww, dicom_wl, modality, dicom_info, first_frame)
+
+
 class DSAViewerWidget(QWidget):
     """
     DSA 多帧图像查看器。
@@ -192,6 +307,7 @@ class DSAViewerWidget(QWidget):
 
     mask_frame_changed = Signal(int)
     load_progress = Signal(int, int)  # (当前文件序号, 总文件数)
+    series_loaded = Signal(int)       # 加载完成，参数为总帧数
     prev_series_requested = Signal()  # 切换到上一序列
     next_series_requested = Signal()  # 切换到下一序列
     status_message = Signal(str)      # 状态栏提示信息
@@ -205,7 +321,10 @@ class DSAViewerWidget(QWidget):
     # ---------- 内部状态 ----------
 
     def _init_state(self):
-        self._raw_frames: List[np.ndarray] = []
+        # 懒加载架构：元数据存 _frame_sources，像素数据按需加载到 _frame_cache
+        self._frame_sources: List[dict] = []   # 每帧的加载信息（文件路径、切片索引、slope/intercept）
+        self._frame_cache: OrderedDict = OrderedDict()  # idx -> np.ndarray（LRU 缓存）
+        self._max_cache_size: int = 50         # 最大缓存帧数
         self._mask_idx: int = 0
         self._current_idx: int = 0
         self._total_frames: int = 0
@@ -248,6 +367,47 @@ class DSAViewerWidget(QWidget):
 
         # DICOM 标签信息（从首个文件读取，供图像角标显示）
         self._dicom_info: dict = {}
+
+    # ---------- 懒加载核心 ----------
+
+    def _get_frame(self, idx: int) -> np.ndarray:
+        """按需加载第 idx 帧，LRU 缓存命中时直接返回。"""
+        if idx < 0 or idx >= self._total_frames:
+            raise IndexError(f"帧索引越界: {idx} (总数 {self._total_frames})")
+
+        # 缓存命中
+        if idx in self._frame_cache:
+            self._frame_cache.move_to_end(idx)
+            return self._frame_cache[idx]
+
+        # 缓存未命中，从磁盘加载
+        source = self._frame_sources[idx]
+        ds = dcmread(source["file_path"], stop_before_pixels=False)
+        arr = ds.pixel_array
+        if arr.ndim == 3:
+            arr = arr[source["slice_idx"]]
+
+        slope = source["slope"]
+        intercept = source["intercept"]
+        if slope != 1 or intercept != 0:
+            arr = arr.astype(np.float32) * slope + intercept
+
+        self._frame_cache[idx] = arr
+
+        # LRU 淘汰
+        while len(self._frame_cache) > self._max_cache_size:
+            self._frame_cache.popitem(last=False)
+
+        return arr
+
+    def _preload_around(self, center_idx: int, radius: int = 5):
+        """后台预加载 center_idx 附近的帧（供后续扩展为后台线程）。"""
+        for idx in range(max(0, center_idx - radius), min(self._total_frames, center_idx + radius + 1)):
+            if idx not in self._frame_cache:
+                try:
+                    self._get_frame(idx)
+                except Exception as e:
+                    logger.debug(f"预加载帧 {idx} 失败: {e}")
 
     # ---------- UI 构建 ----------
 
@@ -732,7 +892,7 @@ class DSAViewerWidget(QWidget):
         self.lbl_corner_br.setGeometry(avail_w - cw - pad, bottom_y, cw, ch)
 
         # 图像自适应居中
-        if self._raw_frames:
+        if self._total_frames > 0:
             self.graphics_view.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
             self.graphics_view.setAlignment(Qt.AlignCenter)
 
@@ -786,87 +946,44 @@ class DSAViewerWidget(QWidget):
     # ---------- 公共接口 ----------
 
     def load_series(self, file_list: List[str]):
-        """加载 DICOM 序列文件，并根据序列内容自动调整默认窗宽窗位。"""
+        """启动后台线程加载 DICOM 序列，不阻塞 UI。"""
         self.clear()
         if not file_list:
             return
 
-        frames: List[np.ndarray] = []
-        pmin, pmax = float("inf"), float("-inf")
-        dicom_ww: Optional[float] = None
-        dicom_wl: Optional[float] = None
-        modality: str = ""
+        self._loader_thread = QThread(self)
+        self._loader = LoadSeriesWorker(file_list)
+        self._loader.moveToThread(self._loader_thread)
 
-        total_files = len(file_list)
-        for idx, fpath in enumerate(file_list, 1):
-            self.load_progress.emit(idx, total_files)
-            try:
-                ds = dcmread(fpath, stop_before_pixels=False)
-                arr = ds.pixel_array
+        self._loader_thread.started.connect(self._loader.run)
+        self._loader.progress.connect(self.load_progress.emit)
+        self._loader.finished.connect(self._on_load_finished)
+        self._loader.error.connect(self._on_load_error)
 
-                slope = float(getattr(ds, "RescaleSlope", 1))
-                intercept = float(getattr(ds, "RescaleIntercept", 0))
-                if slope != 1 or intercept != 0:
-                    arr = arr.astype(np.float32) * slope + intercept
+        # 线程结束后清理
+        self._loader.finished.connect(self._loader_thread.quit)
+        self._loader.finished.connect(self._loader.deleteLater)
+        self._loader.error.connect(self._loader_thread.quit)
+        self._loader.error.connect(self._loader.deleteLater)
+        self._loader_thread.finished.connect(self._loader_thread.deleteLater)
 
-                if arr.ndim == 3:
-                    for i in range(arr.shape[0]):
-                        frames.append(arr[i].copy())
-                        pmin = min(pmin, float(arr[i].min()))
-                        pmax = max(pmax, float(arr[i].max()))
-                elif arr.ndim == 2:
-                    frames.append(arr.copy())
-                    pmin = min(pmin, float(arr.min()))
-                    pmax = max(pmax, float(arr.max()))
+        self._loader_thread.start()
 
-                # 从第一个成功读取的文件获取模态、DICOM 预设窗宽窗位和患者信息
-                if not modality and hasattr(ds, "Modality"):
-                    modality = str(ds.Modality).upper().strip()
-                if dicom_ww is None and hasattr(ds, "WindowWidth"):
-                    ww_val = ds.WindowWidth
-                    if isinstance(ww_val, (list, tuple)):
-                        dicom_ww = float(ww_val[0])
-                    else:
-                        dicom_ww = float(ww_val)
-                if dicom_wl is None and hasattr(ds, "WindowCenter"):
-                    wl_val = ds.WindowCenter
-                    if isinstance(wl_val, (list, tuple)):
-                        dicom_wl = float(wl_val[0])
-                    else:
-                        dicom_wl = float(wl_val)
-                if not self._dicom_info:
-                    self._dicom_info = {
-                        "patient_name": _fmt_patient_name(getattr(ds, "PatientName", "")),
-                        "patient_id": str(getattr(ds, "PatientID", "")),
-                        "patient_sex": str(getattr(ds, "PatientSex", "")),
-                        "patient_age": str(getattr(ds, "PatientAge", "")),
-                        "study_date": str(getattr(ds, "StudyDate", "")),
-                        "series_desc": str(getattr(ds, "SeriesDescription", "")),
-                        "institution": str(getattr(ds, "InstitutionName", "")),
-                        "modality": modality,
-                        "positioner_primary_angle": str(getattr(ds, "PositionerPrimaryAngle", "")),
-                        "positioner_secondary_angle": str(getattr(ds, "PositionerSecondaryAngle", "")),
-                        "protocol_name": str(getattr(ds, "ProtocolName", "")),
-                        "sequence_name": str(getattr(ds, "SequenceName", "")),
-                    }
-            except Exception as e:
-                logger.warning(f"读取失败 {fpath}: {e}")
-
-        if not frames:
-            return
-
-        self._raw_frames = frames
-        self._total_frames = len(frames)
+    def _on_load_finished(self, sources, pmin, pmax, dicom_ww, dicom_wl, modality, dicom_info, first_frame):
+        """后台加载完成，在主线程更新 UI。"""
+        self._frame_sources = sources
+        self._total_frames = len(sources)
         self._current_idx = 0
         self._mask_idx = 0
         self._auto_wwwl = True
+        self._dicom_info = dicom_info
 
-        # 保留整序列极值用于减影范围计算
+        if first_frame is not None:
+            self._frame_cache[0] = first_frame
+
         seq_pmin, seq_pmax = pmin, pmax
 
-        # 根据模态选择默认窗宽窗位策略
         if modality == "CT":
-            # CT：优先 DICOM 预设，否则用通用软组织窗（HU 有明确物理意义）
             if dicom_ww is not None and dicom_wl is not None:
                 self._ww = max(1, dicom_ww)
                 self._wl = dicom_wl
@@ -884,7 +1001,6 @@ class DSAViewerWidget(QWidget):
             self._update_wwwl_label()
             self.update_display()
         else:
-            # 非 CT：直接复用 _reset_wwwl，确保效果与手动点击"重置图像"完全一致
             self._reset_wwwl()
 
         self._global_pixel_range = max(abs(seq_pmin), abs(seq_pmax), 1.0)
@@ -894,19 +1010,20 @@ class DSAViewerWidget(QWidget):
         self.frame_slider.setValue(0)
         self.frame_slider.setEnabled(self._total_frames > 1)
         self.lbl_frame.setText(f"1 / {self._total_frames}")
-
-        # 更新四个角 DICOM 角标
         self._update_corner_labels()
+        self.series_loaded.emit(self._total_frames)
+        logger.info(f"加载完成: {self._total_frames} 帧")
 
-        logger.info(
-            f"加载完成: {self._total_frames} 帧, 像素范围 [{seq_pmin:.0f}, {seq_pmax:.0f}]"
-        )
+    def _on_load_error(self, msg: str):
+        """后台加载出错。"""
+        self.status_message.emit(f"加载失败: {msg}")
+        logger.warning(f"加载序列失败: {msg}")
 
     def clear(self):
         """清空缓存，释放内存。"""
         self.stop()
-        self._raw_frames.clear()
-        self._raw_frames = []
+        self._frame_sources.clear()
+        self._frame_cache.clear()
         self._total_frames = 0
         self._current_idx = 0
         self.pixmap_item.setPixmap(QPixmap())
@@ -928,13 +1045,13 @@ class DSAViewerWidget(QWidget):
 
     def update_display(self):
         """刷新当前帧显示。"""
-        if not self._raw_frames or self._current_idx >= len(self._raw_frames):
+        if self._total_frames == 0 or self._current_idx >= self._total_frames:
             return
 
-        frame = self._raw_frames[self._current_idx]
+        frame = self._get_frame(self._current_idx)
 
         if self._subtraction_enabled:
-            mask = self._raw_frames[self._mask_idx]
+            mask = self._get_frame(self._mask_idx)
             diff = self._compute_subtraction(frame, mask)
             disp = self._apply_window(diff)
         else:
@@ -1147,7 +1264,7 @@ class DSAViewerWidget(QWidget):
     # ---------- 播放控制 ----------
 
     def toggle_play(self):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         if self._is_playing:
             self.stop()
@@ -1155,7 +1272,7 @@ class DSAViewerWidget(QWidget):
             self.play()
 
     def play(self):
-        if not self._raw_frames or self._total_frames <= 1:
+        if self._total_frames <= 1:
             return
         self._is_playing = True
         self.btn_play.setText("⏸")
@@ -1169,7 +1286,7 @@ class DSAViewerWidget(QWidget):
         self._play_timer.stop()
 
     def _on_next_frame(self):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         self._current_idx = (self._current_idx + 1) % self._total_frames
         self.update_display()
@@ -1179,7 +1296,7 @@ class DSAViewerWidget(QWidget):
 
     def _on_prev_frame(self):
         """点击：上一帧"""
-        if not self._raw_frames or self._total_frames <= 1:
+        if self._total_frames <= 1:
             return
         if self._current_idx == 0:
             self.status_message.emit("已经是第一帧")
@@ -1192,7 +1309,7 @@ class DSAViewerWidget(QWidget):
 
     def _on_next_frame_click(self):
         """点击：下一帧（手动按钮）"""
-        if not self._raw_frames or self._total_frames <= 1:
+        if self._total_frames <= 1:
             return
         if self._current_idx == self._total_frames - 1:
             self.status_message.emit("已经是最后一帧")
@@ -1267,7 +1384,7 @@ class DSAViewerWidget(QWidget):
             return cv2.GaussianBlur(arr, (ksize, ksize), 0)
 
     def _set_mask(self):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         self._mask_idx = self._current_idx
         self.lbl_mask.setText(f"蒙片: 第 {self._mask_idx + 1} 帧")
@@ -1276,7 +1393,7 @@ class DSAViewerWidget(QWidget):
 
     def _on_viewer_context_menu(self, pos):
         """图像查看器右键菜单：设为蒙片。"""
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1315,10 +1432,10 @@ class DSAViewerWidget(QWidget):
         self.lbl_wwwl.setText(f"WW: {int(self._ww)}  WL: {int(self._wl)}")
 
     def _reset_wwwl(self):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         # 重置窗宽窗位
-        frame = self._raw_frames[self._current_idx]
+        frame = self._get_frame(self._current_idx)
         pmin, pmax = float(frame.min()), float(frame.max())
         self._wl = (pmin + pmax) / 2
         self._ww = max(1, pmax - pmin)
@@ -1344,7 +1461,7 @@ class DSAViewerWidget(QWidget):
     # ---------- 中键调节 WW/WL ----------
 
     def _start_wwwl_drag(self, global_pos: QPoint):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         self._middle_dragging = True
         self._middle_drag_start = global_pos
@@ -1353,7 +1470,7 @@ class DSAViewerWidget(QWidget):
         self.graphics_view.setCursor(QCursor(Qt.SizeAllCursor))
 
     def _update_wwwl_drag(self, global_pos: QPoint):
-        if not self._middle_dragging or not self._raw_frames:
+        if not self._middle_dragging or self._total_frames == 0:
             return
         delta = global_pos - self._middle_drag_start
         # 水平移动调窗宽（WW），垂直移动调窗位（WL）
@@ -1386,7 +1503,7 @@ class DSAViewerWidget(QWidget):
         return max(0.5, min(10.0, target_scale))
 
     def _start_right_drag(self, global_pos: QPoint):
-        if not self._raw_frames:
+        if self._total_frames == 0:
             return
         self._right_dragging = True
         self._right_drag_start = global_pos
@@ -1394,7 +1511,7 @@ class DSAViewerWidget(QWidget):
         self.graphics_view.setCursor(QCursor(Qt.SizeVerCursor))
 
     def _update_right_drag(self, global_pos: QPoint):
-        if not self._right_dragging or not self._raw_frames:
+        if not self._right_dragging or self._total_frames == 0:
             return
         delta = global_pos - self._right_drag_start
         # 向上拖动放大，向下拖动缩小；每 100 像素约 2 倍变化
@@ -1415,7 +1532,7 @@ class DSAViewerWidget(QWidget):
 
     def wheelEvent(self, event):
         """鼠标滚轮切换上下帧。"""
-        if not self._raw_frames or self._total_frames <= 1:
+        if self._total_frames <= 1:
             return
         delta = event.angleDelta().y()
         if delta > 0:
@@ -1432,17 +1549,18 @@ class DSAViewerWidget(QWidget):
     @property
     def frame_size(self) -> tuple:
         """返回帧尺寸 (width, height)。无帧时返回 (0, 0)。"""
-        if self._raw_frames:
-            h, w = self._raw_frames[0].shape[:2]
-            return (w, h)
+        if self._frame_sources:
+            rows = self._frame_sources[0].get("shape", (0, 0))[0]
+            cols = self._frame_sources[0].get("shape", (0, 0))[1]
+            return (cols, rows)
         return (0, 0)
 
     def get_export_frames(self):
         """生成器：逐帧输出 uint8 灰度图，应用当前窗宽窗位和减影设置。"""
         for i in range(self._total_frames):
-            raw = self._raw_frames[i]
+            raw = self._get_frame(i)
             if self._subtraction_enabled:
-                raw = self._compute_subtraction(raw, self._raw_frames[self._mask_idx])
+                raw = self._compute_subtraction(raw, self._get_frame(self._mask_idx))
             yield self._apply_window(raw)
 
     def export_current_frame(self, path: str) -> bool:
@@ -1454,11 +1572,11 @@ class DSAViewerWidget(QWidget):
         返回：
             是否成功导出
         """
-        if not self._raw_frames or self._current_idx >= len(self._raw_frames):
+        if self._total_frames == 0 or self._current_idx >= self._total_frames:
             return False
-        raw = self._raw_frames[self._current_idx]
+        raw = self._get_frame(self._current_idx)
         if self._subtraction_enabled:
-            raw = self._compute_subtraction(raw, self._raw_frames[self._mask_idx])
+            raw = self._compute_subtraction(raw, self._get_frame(self._mask_idx))
         frame = self._apply_window(raw)
         try:
             import cv2

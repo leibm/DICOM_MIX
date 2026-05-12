@@ -2,8 +2,8 @@
 Unicode true
 !include "MUI2.nsh"
 
-Name "DICOM MIX Tools V3.5"
-OutFile "dist\DICOM_MIX_Tools_V3.5_Setup.exe"
+Name "DICOM MIX Tools V4.1"
+OutFile "dist\DICOM_MIX_Tools_V4.1_Setup.exe"
 InstallDir "$PROGRAMFILES64\DICOM_MIX_Tools"
 InstallDirRegKey HKCU "Software\DICOM_MIX_Tools" "InstallDir"
 RequestExecutionLevel admin

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本（V3.5 版）
+PyInstaller 打包脚本（V4.1 版）
 
 用法: python build_exe.py
 """
@@ -279,7 +279,7 @@ def clean_dist_extras():
 def create_archive():
     """将输出目录压缩为 zip 文件。"""
     dist_dir = "dist/DICOM_MIX_Tools"
-    zip_path = "dist/DICOM_MIX_Tools_V3.5.zip"
+    zip_path = "dist/DICOM_MIX_Tools_V4.1.zip"
     if not os.path.isdir(dist_dir):
         print("未找到打包目录，跳过压缩")
         return
@@ -304,22 +304,24 @@ def copy_readme():
 
     readme = os.path.join(dist_dir, "README.txt")
     with open(readme, "w", encoding="utf-8") as f:
-        f.write("""DICOM MIX Tools v3.5
+        f.write("""DICOM MIX Tools v4.1
 ====================
 
-DSA 图像路由与编辑工具
+DICOM 医学影像综合处理平台
 
 使用说明：
 1. 双击 DICOM_MIX_Tools.exe 启动
 2. 支持 SCP 接收、本地导入、主机查询
-3. 内置 DSA 多帧图像查看器（实时减影、窗宽窗位调节）
+3. 内置 DSA/CT/MR 多帧图像查看器（实时减影、窗宽窗位调节）
 4. 支持图像序列导出为 MP4 / PNG
 5. 支持从主机/DSA 工作站 C-MOVE 拉取图像
+6. 插件系统：3D 渲染（体渲染/MPR）、数据归一化
+7. 懒加载大体积断层数据，后台线程加载不卡顿
 
 依赖：
 - 本程序为 Windows 独立可执行文件，无需安装 Python
 
-技术栈：PySide6, pydicom, pynetdicom, numpy, opencv-python
+技术栈：PySide6, pydicom, pynetdicom, numpy, opencv-python, pyvista, vtk
 """)
     print(f"已创建 {readme}")
 

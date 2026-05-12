@@ -1998,7 +1998,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V4.0")
+        version = QLabel("版本 V4.1")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -3260,6 +3260,7 @@ class MainWindow(QMainWindow):
 
         # DSA 查看器加载进度
         self.dsa_viewer.load_progress.connect(self._on_viewer_load_progress)
+        self.dsa_viewer.series_loaded.connect(self._on_series_loaded)
 
         # DSA 查看器序列导航
         self.dsa_viewer.prev_series_requested.connect(self._on_prev_series)
@@ -3354,6 +3355,10 @@ class MainWindow(QMainWindow):
             # 加载完成后恢复进度条
             if current >= total:
                 QTimer.singleShot(500, lambda: self.progress_bar.setValue(0))
+
+    def _on_series_loaded(self, total_frames: int):
+        """DSA 查看器序列加载完成"""
+        self.status_bar.showMessage(f"加载完成: {total_frames} 帧")
 
     def _on_study_received(self, study_uid: str, patient_name: str):
         """SCP 接收到新 Study 的回调（由外部触发更新树模型）"""
@@ -3977,8 +3982,7 @@ class MainWindow(QMainWindow):
                 if file_list:
                     self.dsa_viewer.load_series(file_list)
                     self.status_bar.showMessage(
-                        f"已加载 {data.get('name', '')}: {len(file_list)} 个文件, "
-                        f"预计 {self.dsa_viewer.total_frames} 帧"
+                        f"正在加载 {data.get('name', '')}: {len(file_list)} 个文件..."
                     )
 
         self.btn_edit_dicom.setEnabled(has_selection)

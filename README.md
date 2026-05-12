@@ -1,22 +1,28 @@
-# DICOM MIX Tools v3.0
+# DICOM MIX Tools v4.1
 
-**DSA 图像路由与编辑工具**
+**DICOM 医学影像综合处理平台**
 
-用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。支持 SCP 被动接收、本地文件导入、主机查询检索，以及从 DSA 工作站主动拉取图像。
+用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。支持 SCP 被动接收、本地文件导入、主机查询检索，以及从 DSA 工作站主动拉取图像。V4.1 新增插件系统、3D 体渲染/MPR、数据归一化、大体积数据懒加载与后台线程加载。
 
 ## 功能特性
 
 - **图像接收**：内置 DICOM SCP 服务端，可接收 DSA 设备推送的图像
 - **本地导入**：批量导入本地 DICOM 文件夹
-- **DSA 查看器**：多帧图像浏览、实时减影、窗宽窗位调节、循环播放
+- **DSA/CT/MR 查看器**：多帧图像浏览、实时减影、窗宽窗位调节、循环播放
 - **图像序列导出**：支持将当前序列导出为 MP4 视频或 PNG 图片序列
 - **患者信息编辑**：修改患者姓名、ID、性别、年龄、出生日期、检查号等
 - **UID 重置**：自动重新生成 Study/Series/SOP Instance UID
 - **主机查询与发送**：C-FIND 查询、C-STORE 发送
 - **主机 C-MOVE 拉取**：从主机服务器主动拉取图像到本地
-- **DSA 双向连接**：C-FIND 查询 DSA 工作站、C-MOVE 主动拉取图像
+- **DSA 双向连接**：C-FIND 查询 DSA 工作站、C-MOVE 主动拉取图像（Study Root / Patient Root 自动回退）
 - **序列快速切换**：查看器内一键切换前后序列，自动管理勾选状态
 - **私有标签保护**：保留 GE DSA 私有标签（0x0019、0x0043 组等）
+- **插件系统**：支持动态安装/卸载插件，远程插件仓库（GitHub Raw）
+- **3D 体渲染**：基于 PyVista + VTK 的体积渲染与等值面提取，OpenGL 失败时自动回退到 MPR 软件渲染
+- **MPR 多平面重建**：轴位/冠状位/矢状位三视图浏览（纯软件，无 OpenGL 依赖）
+- **数据归一化**：异构 DICOM 数据标准化处理
+- **懒加载**：大体积断层数据按需加载，LRU 缓存（最大 50 帧），避免内存溢出
+- **后台加载**：文件扫描与元数据读取在独立线程中执行，加载过程中 UI 不卡顿
 
 ## 系统要求
 
@@ -200,13 +206,20 @@ python main.py
 DICOM MIX Tools/
 ├── main.py              # 程序入口
 ├── ui_main.py           # 主窗口 UI
-├── dicom_viewer.py      # DSA 图像查看器
+├── dicom_viewer.py      # DICOM 图像查看器（DSA/CT/MR，懒加载）
 ├── dicom_input.py       # 数据输入（SCP + 本地载入）
 ├── dicom_network.py     # 网络通信（C-FIND / C-STORE / C-MOVE）
 ├── dicom_processor.py   # 数据处理（信息覆写 + UID 重置）
+├── dicom_normalizer.py  # 异构 DICOM 数据归一化
+├── plugin_manager.py    # 插件管理器（动态安装/卸载/远程仓库）
 ├── config.py            # 全局配置常量
 ├── build_exe.py         # PyInstaller 打包脚本
+├── installer.nsi        # NSIS 安装程序脚本
 ├── requirements.txt     # Python 依赖
+├── plugins/             # 插件目录
+│   └── plugins/
+│       ├── 3d_renderer/     # 3D 体渲染与 MPR 插件
+│       └── normalizer/      # 数据归一化插件
 └── temp_dicom/          # 临时工作目录（自动创建）
 ```
 
@@ -216,6 +229,8 @@ DICOM MIX Tools/
 - **pydicom** — DICOM 文件读写
 - **pynetdicom** — DICOM 网络通信（C-FIND / C-STORE / C-MOVE）
 - **numpy** — 图像像素处理、减影运算
+- **opencv-python** — 图像导出（MP4/PNG 编码）
+- **pyvista + vtk** — 3D 体渲染与 MPR 重建
 - **PyInstaller** — Windows EXE 打包
 
 ## 打包构建
@@ -224,15 +239,15 @@ DICOM MIX Tools/
 python build_exe.py
 ```
 
-输出位于 `dist/DICOM_MIX_Tools/`，压缩包为 `dist/DICOM_MIX_Tools_V3.0.zip`。
+输出位于 `dist/DICOM_MIX_Tools/`，压缩包为 `dist/DICOM_MIX_Tools_V4.1.zip`。
 
 ## 软件信息
 
 - **软件名称**：DICOM MIX Tools
-- **版本**：v3.0
-- **开发日期**：2026-05-10
+- **版本**：v4.1
+- **开发日期**：2026-05-12
 - **适用平台**：Windows 10/11（64 位）
-- **用途**：GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑与转发
+- **用途**：GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑与转发，支持 CT/MR 大体积数据
 
 ## 开源协议与版权
 
