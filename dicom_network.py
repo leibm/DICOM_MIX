@@ -24,6 +24,7 @@ from pynetdicom import AE, debug_logger
 from pynetdicom.sop_class import (
     PatientRootQueryRetrieveInformationModelFind,
     StudyRootQueryRetrieveInformationModelFind,
+    ModalityWorklistInformationFind,
     Verification,
 )
 from pydicom.dataset import Dataset
@@ -67,6 +68,9 @@ class DicomNetworkSignals(QObject):
     pacs_move_progress = Signal(int, int)
     # PACS C-MOVE 拉取完成（成功数, 总数）
     pacs_move_finished = Signal(int, int)
+
+    # Worklist C-FIND 查询结果（List[Dict]）
+    worklist_results_ready = Signal(list)
 
 
 # ------------------------------------------------------------------------------
@@ -220,8 +224,8 @@ class CFindWorker(QObject):
 
             # 创建 Application Entity
             ae = AE(ae_title=self.pacs.local_ae_title)
-            ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
+            ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
 
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
             if not assoc.is_established:
@@ -230,16 +234,33 @@ class CFindWorker(QObject):
                 self.error.emit(error_msg)
                 return
 
+            # 检查对端接受了哪些 Query/Retrieve Context
+            accepted_abstract_syntaxes = {
+                ctx.abstract_syntax for ctx in assoc.accepted_contexts
+            }
+            study_root_accepted = StudyRootQueryRetrieveInformationModelFind in accepted_abstract_syntaxes
+            patient_root_accepted = PatientRootQueryRetrieveInformationModelFind in accepted_abstract_syntaxes
+
+            logger.info(
+                f"Association 已建立，接受的 context: "
+                f"StudyRoot={study_root_accepted}, PatientRoot={patient_root_accepted}"
+            )
+
             results = []
             try:
-                # 先尝试 Study Root
-                logger.info("尝试 Study Root C-FIND...")
-                results = self._send_c_find(assoc, ds, StudyRootQueryRetrieveInformationModelFind)
-
-                # Study Root 返回 0 条时，回退到 Patient Root（同一数据集，换 SOP Class）
-                if not results:
-                    logger.info("Study Root 无结果，回退到 Patient Root...")
+                if study_root_accepted:
+                    # 优先使用 Study Root（现代设备主流）
+                    logger.info("使用 Study Root C-FIND...")
+                    results = self._send_c_find(assoc, ds, StudyRootQueryRetrieveInformationModelFind)
+                elif patient_root_accepted:
+                    # Study Root 未被接受时回退到 Patient Root（老旧设备）
+                    logger.info("Study Root 未被接受，回退到 Patient Root C-FIND...")
                     results = self._send_c_find(assoc, ds, PatientRootQueryRetrieveInformationModelFind)
+                else:
+                    error_msg = "主机未接受 Study Root 或 Patient Root 查询模型"
+                    logger.error(error_msg)
+                    self.error.emit(error_msg)
+                    return
 
             finally:
                 assoc.release()
@@ -249,6 +270,213 @@ class CFindWorker(QObject):
         except Exception as e:
             logger.exception("C-FIND 查询异常")
             self.error.emit(f"C-FIND 异常: {e}")
+
+
+# ------------------------------------------------------------------------------
+# Worklist C-FIND 工作线程
+# ------------------------------------------------------------------------------
+
+class WorklistFindWorker(QObject):
+    """
+    Modality Worklist C-FIND SCU 工作线程。
+
+    向主机/RIS 查询预约检查安排（Worklist），返回包含患者信息、
+    预约日期时间、检查描述、设备 AE 等字段的结果列表。
+
+    信号：
+        finished(List[Dict]): 查询成功完成
+        error(str): 查询过程中发生错误
+    """
+
+    finished = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, pacs_config: PacsNodeConfig, query_params: Dict,
+                 parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self.pacs = pacs_config
+        self.query_params = query_params
+
+    @staticmethod
+    def _format_study_date(date_range: str) -> str:
+        """将日期范围描述转换为 DICOM 日期格式 (YYYYMMDD-YYYYMMDD)。"""
+        today = datetime.now().date()
+        today_str = today.strftime("%Y%m%d")
+        mapping = {
+            "TODAY": today_str,
+            "LAST3DAYS": (today - timedelta(days=2)).strftime("%Y%m%d") + "-" + today_str,
+            "LAST7DAYS": (today - timedelta(days=6)).strftime("%Y%m%d") + "-" + today_str,
+            "LAST30DAYS": (today - timedelta(days=29)).strftime("%Y%m%d") + "-" + today_str,
+        }
+        return mapping.get(date_range.upper(), date_range)
+
+    def _build_query_dataset(self) -> Dataset:
+        """构建 Worklist C-FIND 查询数据集。"""
+        ds = Dataset()
+
+        # 患者信息过滤键
+        patient_name = self.query_params.get("patient_name", "").strip()
+        ds.PatientName = patient_name if patient_name else "*"
+
+        patient_id = self.query_params.get("patient_id", "").strip()
+        ds.PatientID = patient_id if patient_id else "*"
+
+        accession = self.query_params.get("accession_number", "").strip()
+        ds.AccessionNumber = accession if accession else "*"
+
+        # 患者信息返回键
+        ds.PatientSex = ""
+        ds.PatientBirthDate = ""
+
+        # 预约过程步序列 (Scheduled Procedure Step Sequence)
+        sps = Dataset()
+
+        # 日期范围 -> ScheduledProcedureStepStartDate
+        date_range = self.query_params.get("study_date_range", "").strip()
+        if date_range:
+            sps.ScheduledProcedureStepStartDate = self._format_study_date(date_range)
+        else:
+            sps.ScheduledProcedureStepStartDate = "*"
+
+        # 模态
+        modality = self.query_params.get("modality", "").strip()
+        if modality:
+            sps.Modality = modality
+
+        # 设备 AE Title
+        station_ae = self.query_params.get("station_ae", "").strip()
+        if station_ae:
+            sps.ScheduledStationAETitle = station_ae
+
+        # 返回键
+        sps.ScheduledProcedureStepDescription = ""
+        sps.ScheduledProcedureStepStartTime = ""
+        sps.ScheduledProcedureStepID = ""
+
+        ds.ScheduledProcedureStepSequence = [sps]
+
+        # 其他返回键
+        ds.StudyInstanceUID = ""
+        ds.ReferringPhysicianName = ""
+
+        return ds
+
+    def run(self):
+        """执行 Worklist C-FIND 查询。"""
+        try:
+            logger.info(f"开始 Worklist 查询: {self.query_params} -> {self.pacs}")
+
+            ds = self._build_query_dataset()
+            logger.debug(f"Worklist 查询数据集: {ds}")
+
+            ae = AE(ae_title=self.pacs.local_ae_title)
+            ae.add_requested_context(ModalityWorklistInformationFind)
+
+            assoc = ae.associate(
+                self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title
+            )
+            if not assoc.is_established:
+                error_msg = (
+                    f"无法连接到主机: {self.pacs.ae_title}@"
+                    f"{self.pacs.host}:{self.pacs.port}"
+                )
+                logger.error(error_msg)
+                self.error.emit(error_msg)
+                return
+
+            results = []
+            try:
+                responses = assoc.send_c_find(
+                    ds, ModalityWorklistInformationFind
+                )
+                for status, identifier in responses:
+                    if not status:
+                        continue
+                    if status.Status == 0xFF00:  # Pending
+                        if identifier is not None:
+                            # 解析 ScheduledProcedureStepSequence
+                            sps_list = getattr(
+                                identifier, "ScheduledProcedureStepSequence", []
+                            )
+                            sps_info = {}
+                            if sps_list and len(sps_list) > 0:
+                                sps = sps_list[0]
+                                sps_info = {
+                                    "scheduled_date": str(
+                                        getattr(
+                                            sps, "ScheduledProcedureStepStartDate", ""
+                                        )
+                                    ),
+                                    "scheduled_time": str(
+                                        getattr(
+                                            sps, "ScheduledProcedureStepStartTime", ""
+                                        )
+                                    ),
+                                    "scheduled_description": str(
+                                        getattr(
+                                            sps,
+                                            "ScheduledProcedureStepDescription",
+                                            "",
+                                        )
+                                    ),
+                                    "scheduled_station_ae": str(
+                                        getattr(
+                                            sps, "ScheduledStationAETitle", ""
+                                        )
+                                    ),
+                                    "modality": str(getattr(sps, "Modality", "")),
+                                    "scheduled_step_id": str(
+                                        getattr(sps, "ScheduledProcedureStepID", "")
+                                    ),
+                                }
+
+                            result = {
+                                "patient_name": str(
+                                    getattr(identifier, "PatientName", "")
+                                ),
+                                "patient_id": str(
+                                    getattr(identifier, "PatientID", "")
+                                ),
+                                "accession_number": str(
+                                    getattr(identifier, "AccessionNumber", "")
+                                ),
+                                "patient_sex": str(
+                                    getattr(identifier, "PatientSex", "")
+                                ),
+                                "patient_birth_date": str(
+                                    getattr(identifier, "PatientBirthDate", "")
+                                ),
+                                "study_instance_uid": str(
+                                    getattr(identifier, "StudyInstanceUID", "")
+                                ),
+                                "referring_physician": str(
+                                    getattr(identifier, "ReferringPhysicianName", "")
+                                ),
+                                **sps_info,
+                            }
+                            results.append(result)
+                    elif status.Status == 0x0000:  # Success
+                        logger.info(
+                            f"Worklist 查询完成，共 {len(results)} 条记录"
+                        )
+                    elif status.Status == 0xFF01:  # Pending with warning
+                        logger.warning(
+                            f"Worklist 警告状态: 0x{status.Status:04X}"
+                        )
+                    else:
+                        error_msg = (
+                            f"Worklist 失败，状态码: 0x{status.Status:04X}"
+                        )
+                        logger.error(error_msg)
+                        raise RuntimeError(error_msg)
+            finally:
+                assoc.release()
+
+            self.finished.emit(results)
+
+        except Exception as e:
+            logger.exception("Worklist 查询异常")
+            self.error.emit(f"Worklist 异常: {e}")
 
 
 # ------------------------------------------------------------------------------
@@ -573,6 +801,8 @@ class DicomNetworkManager(QObject):
         self._current_dsa_index: int = 0
         self._pacs_move_thread: Optional[QThread] = None
         self._pacs_move_worker: Optional[CMoveWorker] = None
+        self._worklist_thread: Optional[QThread] = None
+        self._worklist_worker: Optional[WorklistFindWorker] = None
 
     # ---------- C-FIND 接口 ----------
 
@@ -634,6 +864,66 @@ class DicomNetworkManager(QObject):
         finally:
             self._find_thread = None
             self._find_worker = None
+
+    def query_worklist(self, query_dict: Dict):
+        """
+        启动 Worklist C-FIND 查询任务。
+
+        参数：
+            query_dict: 查询条件字典，可包含 patient_name, patient_id,
+                        accession_number, study_date_range, modality, station_ae 等
+        """
+        self._cleanup_worklist()
+
+        self._worklist_thread = QThread(self)
+        self._worklist_worker = WorklistFindWorker(self.pacs_config, query_dict)
+        self._worklist_worker.moveToThread(self._worklist_thread)
+
+        # 信号转发
+        self._worklist_worker.finished.connect(self.signals.worklist_results_ready)
+        self._worklist_worker.error.connect(self.signals.error_occurred)
+
+        # 生命周期
+        self._worklist_thread.started.connect(self._worklist_worker.run)
+        self._worklist_worker.finished.connect(self._worklist_thread.quit)
+        self._worklist_worker.finished.connect(self._worklist_worker.deleteLater)
+        self._worklist_thread.finished.connect(self._worklist_thread.deleteLater)
+
+        self._worklist_thread.start()
+        logger.info(f"已启动 Worklist 查询线程，条件: {query_dict}")
+
+    def _cleanup_worklist(self):
+        """清理之前的 Worklist 查询线程和信号连接。"""
+        try:
+            if self._worklist_thread:
+                if self._worklist_thread.isRunning():
+                    self._worklist_thread.quit()
+                    self._worklist_thread.wait(2000)
+                try:
+                    self._worklist_thread.started.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._worklist_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        try:
+            if self._worklist_worker:
+                try:
+                    self._worklist_worker.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    self._worklist_worker.error.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+        finally:
+            self._worklist_thread = None
+            self._worklist_worker = None
 
     # ---------- C-STORE 接口 ----------
 
@@ -852,6 +1142,9 @@ class DicomNetworkManager(QObject):
             move_dest_ae: 本机 SCP 的 AE Title（C-MOVE 目标）
             dsa_index: DSA 节点索引（在 dsa_configs 列表中的位置）
         """
+        if not study_uid or not study_uid.strip():
+            self.signals.error_occurred.emit("Study UID 不能为空，无法发起拉取")
+            return
         if not self.dsa_configs:
             self.signals.error_occurred.emit("未配置 DSA 节点")
             return
@@ -925,6 +1218,9 @@ class DicomNetworkManager(QObject):
             study_uid: StudyInstanceUID
             move_dest_ae: 本机 SCP 的 AE Title（C-MOVE 目标）
         """
+        if not study_uid or not study_uid.strip():
+            self.signals.error_occurred.emit("Study UID 不能为空，无法发起拉取")
+            return
         self._cleanup_pacs_move()
 
         self._pacs_move_thread = QThread(self)

@@ -736,6 +736,11 @@ class ApplicationController(QObject):
             self._on_dsa_move_auto_refresh
         )
 
+        # Worklist 信号转发
+        self.network_mgr.signals.worklist_results_ready.connect(
+            self.window.network_signals.worklist_results_ready
+        )
+
         # ===== 数据处理模块 → UI =====
         self.processor.signals.process_progress.connect(
             self.window.processor_signals.process_progress
@@ -760,6 +765,9 @@ class ApplicationController(QObject):
         # DSA 请求（带 dsa_index 参数）
         self.window.request_dsa_find.connect(self._on_dsa_find)
         self.window.request_dsa_move.connect(self._on_dsa_move)
+
+        # Worklist 请求
+        self.window.request_worklist_find.connect(self.network_mgr.query_worklist)
 
         # 导出请求
         self.window.request_export.connect(self._on_export)

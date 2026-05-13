@@ -113,6 +113,9 @@ class DicomNetworkSignals(QObject):
     dsa_move_progress = Signal(int, int)   # DSA C-MOVE 进度
     dsa_move_finished = Signal(int, int)   # DSA C-MOVE 完成
 
+    # Worklist 相关信号
+    worklist_results_ready = Signal(list)  # Worklist C-FIND 结果
+
 
 class DicomProcessorSignals(QObject):
     """dicom_processor 模块与 UI 之间的通信信号"""
@@ -670,6 +673,10 @@ class PacsQueryDialog(QDialog):
 
     def _on_find(self):
         """点击查询按钮"""
+        patient_name = self.edit_find_name.text().strip()
+        patient_id = self.edit_find_id.text().strip()
+        accession_number = self.edit_find_acc.text().strip()
+
         date_map = {
             "今天": "TODAY",
             "最近3天": "LAST3DAYS",
@@ -678,9 +685,9 @@ class PacsQueryDialog(QDialog):
             "全部": "",
         }
         query = {
-            "patient_name": self.edit_find_name.text().strip(),
-            "patient_id": self.edit_find_id.text().strip(),
-            "accession_number": self.edit_find_acc.text().strip(),
+            "patient_name": patient_name,
+            "patient_id": patient_id,
+            "accession_number": accession_number,
             "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
         }
         self.result_model.clear()
@@ -1564,6 +1571,24 @@ class DsaQueryDialog(QDialog):
             )
         layout.addWidget(self.lbl_scp_status)
 
+        # 搜索条件行
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("患者姓名:"))
+        self.edit_find_name = QLineEdit()
+        self.edit_find_name.setPlaceholderText("支持模糊查询")
+        search_layout.addWidget(self.edit_find_name)
+
+        search_layout.addWidget(QLabel("患者ID:"))
+        self.edit_find_id = QLineEdit()
+        self.edit_find_id.setPlaceholderText("Patient ID")
+        search_layout.addWidget(self.edit_find_id)
+
+        search_layout.addWidget(QLabel("检查号:"))
+        self.edit_find_acc = QLineEdit()
+        self.edit_find_acc.setPlaceholderText("Accession Number")
+        search_layout.addWidget(self.edit_find_acc)
+        layout.addLayout(search_layout)
+
         # 顶部：DSA 节点选择 + 日期筛选
         top_layout = QHBoxLayout()
         top_layout.addWidget(QLabel("目标 DSA:"))
@@ -1638,6 +1663,11 @@ class DsaQueryDialog(QDialog):
         if dsa_index is None or dsa_index < 0:
             QMessageBox.warning(self, "提示", "请先配置并选择一个 DSA 节点")
             return
+
+        patient_name = self.edit_find_name.text().strip()
+        patient_id = self.edit_find_id.text().strip()
+        accession_number = self.edit_find_acc.text().strip()
+
         self.result_model.removeRows(0, self.result_model.rowCount())
         self.lbl_status.setText("正在查询 DSA 工作站...")
         self.btn_find.setEnabled(False)
@@ -1649,9 +1679,9 @@ class DsaQueryDialog(QDialog):
             "全部": "",
         }
         query = {
-            "patient_name": "",
-            "patient_id": "",
-            "accession_number": "",
+            "patient_name": patient_name,
+            "patient_id": patient_id,
+            "accession_number": accession_number,
             "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
         }
         self.request_find.emit(query, dsa_index)
@@ -1757,6 +1787,9 @@ class DsaQueryDialog(QDialog):
             })
         return {
             "results": results,
+            "patient_name": self.edit_find_name.text(),
+            "patient_id": self.edit_find_id.text(),
+            "accession_number": self.edit_find_acc.text(),
             "date_filter_idx": self.combo_date_filter.currentIndex(),
             "selected_uid": self._selected_study_uid,
             "dsa_index": self.combo_dsa.currentIndex(),
@@ -1767,6 +1800,10 @@ class DsaQueryDialog(QDialog):
         """恢复上次的状态"""
         if not state:
             return
+        # 恢复查询条件输入框
+        self.edit_find_name.setText(state.get("patient_name", ""))
+        self.edit_find_id.setText(state.get("patient_id", ""))
+        self.edit_find_acc.setText(state.get("accession_number", ""))
         # 恢复日期筛选
         idx = state.get("date_filter_idx", 0)
         if 0 <= idx < self.combo_date_filter.count():
@@ -2075,6 +2112,154 @@ class AboutDialog(QDialog):
 
 
 # ------------------------------------------------------------------------------
+# Worklist 查询弹窗
+# ------------------------------------------------------------------------------
+class WorklistQueryDialog(QDialog):
+    """Modality Worklist 查询弹窗"""
+
+    request_find = Signal(dict)  # 发出 Worklist 查询请求
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("查询 Worklist")
+        self.setMinimumSize(900, 500)
+
+        layout = QVBoxLayout(self)
+
+        # 搜索条件行
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("患者姓名:"))
+        self.edit_find_name = QLineEdit()
+        self.edit_find_name.setPlaceholderText("支持模糊查询")
+        search_layout.addWidget(self.edit_find_name)
+
+        search_layout.addWidget(QLabel("患者ID:"))
+        self.edit_find_id = QLineEdit()
+        self.edit_find_id.setPlaceholderText("Patient ID")
+        search_layout.addWidget(self.edit_find_id)
+
+        search_layout.addWidget(QLabel("检查号:"))
+        self.edit_find_acc = QLineEdit()
+        self.edit_find_acc.setPlaceholderText("Accession Number")
+        search_layout.addWidget(self.edit_find_acc)
+
+        search_layout.addWidget(QLabel("日期:"))
+        self.combo_date_filter = QComboBox()
+        self.combo_date_filter.addItems(["今天", "最近3天", "最近7天", "最近30天", "全部"])
+        self.combo_date_filter.setCurrentIndex(0)
+        search_layout.addWidget(self.combo_date_filter)
+        layout.addLayout(search_layout)
+
+        # 第二行搜索条件
+        search_layout2 = QHBoxLayout()
+        search_layout2.addWidget(QLabel("模态:"))
+        self.edit_modality = QLineEdit()
+        self.edit_modality.setPlaceholderText("如 CT/MR/DSA")
+        search_layout2.addWidget(self.edit_modality)
+
+        search_layout2.addWidget(QLabel("设备 AE:"))
+        self.edit_station_ae = QLineEdit()
+        self.edit_station_ae.setPlaceholderText("Scheduled Station AE")
+        search_layout2.addWidget(self.edit_station_ae)
+
+        search_layout2.addStretch()
+        self.btn_find = QPushButton("查询 Worklist")
+        self.btn_find.setObjectName("success")
+        self.btn_find.clicked.connect(self._on_find)
+        search_layout2.addWidget(self.btn_find)
+        layout.addLayout(search_layout2)
+
+        # 查询结果表格
+        self.table_results = QTableView()
+        self.table_results.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_results.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table_results.setAlternatingRowColors(True)
+        self.result_model = QStandardItemModel()
+        self.result_model.setHorizontalHeaderLabels([
+            "患者姓名", "患者ID", "性别", "出生日期", "检查号",
+            "预约日期", "预约时间", "检查描述", "设备AE", "模态"
+        ])
+        self.table_results.setModel(self.result_model)
+        self.table_results.horizontalHeader().setStretchLastSection(True)
+        self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table_results)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(self.lbl_status)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.setObjectName("secondary")
+        self.btn_close.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+
+    def _on_find(self):
+        """点击查询按钮"""
+        patient_name = self.edit_find_name.text().strip()
+        patient_id = self.edit_find_id.text().strip()
+        accession_number = self.edit_find_acc.text().strip()
+
+        # 必须输入至少一个查询条件
+        if not patient_name and not patient_id and not accession_number:
+            QMessageBox.warning(
+                self, "提示",
+                "请输入患者姓名、患者ID或检查号中的至少一项进行查询"
+            )
+            return
+
+        date_map = {
+            "今天": "TODAY",
+            "最近3天": "LAST3DAYS",
+            "最近7天": "LAST7DAYS",
+            "最近30天": "LAST30DAYS",
+            "全部": "",
+        }
+        query = {
+            "patient_name": patient_name,
+            "patient_id": patient_id,
+            "accession_number": accession_number,
+            "study_date_range": date_map.get(self.combo_date_filter.currentText(), ""),
+            "modality": self.edit_modality.text().strip(),
+            "station_ae": self.edit_station_ae.text().strip(),
+        }
+        self.result_model.removeRows(0, self.result_model.rowCount())
+        self.lbl_status.setText("正在查询 Worklist...")
+        self.btn_find.setEnabled(False)
+        self.request_find.emit(query)
+
+    def on_results_ready(self, results: list):
+        """接收查询结果"""
+        self.btn_find.setEnabled(True)
+        self.result_model.removeRows(0, self.result_model.rowCount())
+        if not results:
+            self.lbl_status.setText("未找到匹配的 Worklist 记录")
+            return
+
+        for r in results:
+            row = [
+                QStandardItem(r.get("patient_name", "")),
+                QStandardItem(r.get("patient_id", "")),
+                QStandardItem(r.get("patient_sex", "")),
+                QStandardItem(r.get("patient_birth_date", "")),
+                QStandardItem(r.get("accession_number", "")),
+                QStandardItem(r.get("scheduled_date", "")),
+                QStandardItem(r.get("scheduled_time", "")),
+                QStandardItem(r.get("scheduled_description", "")),
+                QStandardItem(r.get("scheduled_station_ae", "")),
+                QStandardItem(r.get("modality", "")),
+            ]
+            for item in row:
+                item.setEditable(False)
+            self.result_model.appendRow(row)
+
+        self.lbl_status.setText(f"查询完成，共 {len(results)} 条记录")
+
+
+# ------------------------------------------------------------------------------
 # 主窗口
 # ------------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -2102,8 +2287,10 @@ class MainWindow(QMainWindow):
     request_dsa_move = Signal(str, str, int)    # 请求 DSA C-MOVE (study_uid, move_dest_ae, dsa_index)
     show_pacs_query_requested = Signal()   # 请求显示主机查询弹窗
     show_dsa_query_requested = Signal()    # 请求显示 DSA 查询弹窗
+    show_worklist_query_requested = Signal()  # 请求显示 Worklist 查询弹窗
     request_export = Signal(str, dict)     # 请求导出 (format, params)
     request_normalize = Signal(list, str, str)  # 请求归一化 (file_paths, output_dir, target_manufacturer)
+    request_worklist_find = Signal(dict)   # 请求 Worklist C-FIND (参数字典)
 
     # 插件管理信号 (V4.0)
     request_plugin_install = Signal(str)     # 请求安装插件 (plugin_name)
@@ -2213,6 +2400,8 @@ class MainWindow(QMainWindow):
         self.act_query_pacs.triggered.connect(self._on_show_pacs_query)
         self.act_query_dsa = self.menu_data_load.addAction("查询 DSA")
         self.act_query_dsa.triggered.connect(self._on_show_dsa_query)
+        self.act_query_worklist = self.menu_data_load.addAction("查询 Worklist")
+        self.act_query_worklist.triggered.connect(self._on_show_worklist_query)
         self.btn_data_load.setMenu(self.menu_data_load)
         toolbar.addWidget(self.btn_data_load)
 
@@ -3456,6 +3645,50 @@ class MainWindow(QMainWindow):
         dialog.finished.connect(_on_dsa_finished)
         dialog.show()
 
+    def _on_show_worklist_query(self):
+        """显示 Worklist 查询弹窗（非模态，不阻塞主窗口）"""
+        if hasattr(self, '_worklist_query_dialog') and self._worklist_query_dialog:
+            self._worklist_query_dialog.raise_()
+            self._worklist_query_dialog.activateWindow()
+            return
+
+        dialog = WorklistQueryDialog(self)
+        self._worklist_query_dialog = dialog
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.request_find.connect(self.request_worklist_find.emit)
+        self.network_signals.worklist_results_ready.connect(dialog.on_results_ready)
+
+        # 恢复上次状态
+        if hasattr(self, '_worklist_query_state') and self._worklist_query_state:
+            dialog.edit_find_name.setText(self._worklist_query_state.get("patient_name", ""))
+            dialog.edit_find_id.setText(self._worklist_query_state.get("patient_id", ""))
+            dialog.edit_find_acc.setText(self._worklist_query_state.get("accession_number", ""))
+            dialog.edit_modality.setText(self._worklist_query_state.get("modality", ""))
+            dialog.edit_station_ae.setText(self._worklist_query_state.get("station_ae", ""))
+            idx = self._worklist_query_state.get("date_filter_idx", 0)
+            if 0 <= idx < dialog.combo_date_filter.count():
+                dialog.combo_date_filter.setCurrentIndex(idx)
+
+        def _on_worklist_finished():
+            # 保存状态
+            self._worklist_query_state = {
+                "patient_name": dialog.edit_find_name.text(),
+                "patient_id": dialog.edit_find_id.text(),
+                "accession_number": dialog.edit_find_acc.text(),
+                "modality": dialog.edit_modality.text(),
+                "station_ae": dialog.edit_station_ae.text(),
+                "date_filter_idx": dialog.combo_date_filter.currentIndex(),
+            }
+            # 断开临时信号连接
+            try:
+                self.network_signals.worklist_results_ready.disconnect(dialog.on_results_ready)
+            except (TypeError, RuntimeError):
+                pass
+            self._worklist_query_dialog = None
+
+        dialog.finished.connect(_on_worklist_finished)
+        dialog.show()
+
     def _on_show_help(self):
         """显示帮助文档弹窗"""
         dialog = HelpDialog(self)
@@ -3493,6 +3726,20 @@ class MainWindow(QMainWindow):
                 pass
         self._plugin_dialog = None
 
+    @staticmethod
+    def _get_slice_count_for_normalization(file_list: List[str]) -> int:
+        """获取用于归一化的切片数量。单文件多帧 DICOM 按帧数计算。"""
+        count = len(file_list)
+        if count == 1:
+            try:
+                from pydicom import dcmread
+                ds = dcmread(file_list[0], stop_before_pixels=True)
+                number_of_frames = getattr(ds, 'NumberOfFrames', 1)
+                count = max(1, int(number_of_frames))
+            except Exception:
+                pass
+        return count
+
     def _on_show_normalizer(self):
         """显示异构数据归一化对话框"""
         current = self.tree_view.selectionModel().currentIndex()
@@ -3529,11 +3776,12 @@ class MainWindow(QMainWindow):
                     file_list.extend(child_data.get("instances", []))
             patient_name = data.get("patient_name", "")
 
-        if len(file_list) < 2:
+        normalize_slice_count = self._get_slice_count_for_normalization(file_list)
+        if normalize_slice_count < 2:
             QMessageBox.warning(
                 self, "提示",
                 "归一化需要至少 2 张切片的断层序列。\n"
-                "请选中一个包含多张切片的 DSA/CT 重建序列。"
+                "请选中一个包含多张切片的 DSA/CT 重建序列（或多帧 DICOM）。"
             )
             return
 
@@ -3972,8 +4220,8 @@ class MainWindow(QMainWindow):
                             file_list.extend(child_data.get("instances", []))
 
                 has_selection = bool(file_list)
-                normalize_file_count = len(file_list)
-                # 归一化需要至少2张切片（断层图像）
+                normalize_file_count = self._get_slice_count_for_normalization(file_list)
+                # 归一化需要至少2张切片（断层图像或多帧DICOM）
                 can_normalize = normalize_file_count >= 2
 
                 # 自动将当前选中 study 的患者信息填入底部目标摘要（作为默认值）
