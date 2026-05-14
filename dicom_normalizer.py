@@ -171,6 +171,51 @@ class DICOMNormalizer:
         if n_frames <= 1:
             return [(ds, file_path)]
 
+        # 校验实际 PixelData 能支持多少帧（防止 NumberOfFrames 虚标）
+        actual_frames = n_frames
+        try:
+            full_ds = pydicom.dcmread(file_path, force=True)
+            if "PixelData" in full_ds:
+                pixel_data_len = len(full_ds.PixelData)
+                rows = int(getattr(full_ds, 'Rows', 0))
+                cols = int(getattr(full_ds, 'Columns', 0))
+                bits = int(getattr(full_ds, 'BitsAllocated', 16))
+                samples = int(getattr(full_ds, 'SamplesPerPixel', 1))
+                bytes_per_sample = bits // 8
+                row_bytes = cols * samples * bytes_per_sample
+                if row_bytes % 2 == 1:
+                    row_bytes += 1
+                bytes_per_frame = row_bytes * rows
+                if bytes_per_frame > 0:
+                    actual_frames_from_size = pixel_data_len // bytes_per_frame
+                    # 也尝试用 pixel_array 形状确认
+                    try:
+                        pa = full_ds.pixel_array
+                        if pa.ndim == 2:
+                            actual_frames_from_array = 1
+                        elif pa.ndim == 3:
+                            actual_frames_from_array = pa.shape[0]
+                        elif pa.ndim == 4:
+                            actual_frames_from_array = pa.shape[0]
+                        else:
+                            actual_frames_from_array = n_frames
+                    except Exception:
+                        actual_frames_from_array = n_frames
+
+                    actual_frames = min(n_frames, actual_frames_from_size, actual_frames_from_array)
+                    if actual_frames < n_frames:
+                        print(
+                            f"[!] 警告: {os.path.basename(file_path)} 声称 {n_frames} 帧，"
+                            f"但实际仅 {actual_frames} 帧有效 (PixelData {pixel_data_len} 字节，"
+                            f"pixel_array {getattr(full_ds, 'pixel_array', 'N/A')})"
+                        )
+        except Exception as e:
+            print(f"[!] 警告: 校验 {os.path.basename(file_path)} 实际帧数失败 — {e}")
+
+        n_frames = actual_frames
+        if n_frames <= 1:
+            return [(ds, file_path)]
+
         # 基础 Z 坐标与层间距
         base_ipp = list(ds.ImagePositionPatient) if "ImagePositionPatient" in ds else [0.0, 0.0, 0.0]
         spacing = 1.0
