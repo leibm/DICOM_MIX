@@ -624,6 +624,7 @@ class DICOMNormalizer:
                     output_ds.file_meta = full_ds.file_meta.copy()
 
                 # 提取指定帧的像素数据
+                pixel_extracted = False
                 try:
                     ts = getattr(getattr(full_ds, 'file_meta', None), 'TransferSyntaxUID', None)
                     is_uncompressed = (
@@ -650,24 +651,39 @@ class DICOMNormalizer:
                         bytes_per_frame = row_bytes * rows
 
                         expected_total = bytes_per_frame * total_frames
-                        if len(pixel_data) != expected_total:
+                        actual_len = len(pixel_data)
+
+                        # 更宽松的长度匹配：允许尾部有少量填充字节
+                        if actual_len == expected_total:
+                            pass
+                        else:
                             # 尝试无行填充的 layout
                             bytes_per_frame_raw = columns * samples * bytes_per_sample * rows
                             expected_total_raw = bytes_per_frame_raw * total_frames
-                            if len(pixel_data) == expected_total_raw:
+                            if actual_len == expected_total_raw:
+                                bytes_per_frame = bytes_per_frame_raw
+                            elif actual_len >= expected_total and actual_len <= expected_total + total_frames * 2:
+                                # 允许每帧最多 2 字节尾部填充，仍按标准行填充计算偏移
+                                pass
+                            elif actual_len >= expected_total_raw and actual_len <= expected_total_raw + total_frames * 2:
                                 bytes_per_frame = bytes_per_frame_raw
                             else:
+                                # 字节长度不匹配，回退到 pixel_array
                                 raise ValueError(
-                                    f"PixelData 长度不匹配: "
-                                    f"实际 {len(pixel_data)} != 期望 {expected_total} "
+                                    f"PixelData 长度不匹配 (将回退到 pixel_array): "
+                                    f"实际 {actual_len} != 期望 {expected_total} "
                                     f"(frames={total_frames}, rows={rows}, cols={columns}, bits={bits})"
                                 )
 
                         start = frame_idx * bytes_per_frame
                         end = start + bytes_per_frame
+                        if end > actual_len:
+                            raise ValueError(f"帧 {frame_idx} 越界: {end} > {actual_len}")
                         output_ds.PixelData = pixel_data[start:end]
-                    else:
-                        # 压缩数据：使用 pixel_array 自动解压
+                        pixel_extracted = True
+
+                    if not pixel_extracted:
+                        # 压缩数据 或 未压缩回退：使用 pixel_array 自动解压
                         pixel_arr = full_ds.pixel_array
                         if pixel_arr.ndim == 3:
                             frame_arr = pixel_arr[frame_idx]
@@ -693,10 +709,11 @@ class DICOMNormalizer:
                         output_ds.PixelData = frame_arr.tobytes()
                         output_ds.Rows = frame_arr.shape[0]
                         output_ds.Columns = frame_arr.shape[1]
+                        pixel_extracted = True
 
                 except Exception as e:
-                    if self.verbose:
-                        print(f"  警告：提取帧 {frame_idx} 像素数据失败 — {e}")
+                    # 关键路径：始终打印警告，方便排查
+                    print(f"  [!] 提取帧 {frame_idx} 像素数据失败 ({os.path.basename(orig_path)}) — {e}")
                     continue
 
                 output_ds.NumberOfFrames = 1
