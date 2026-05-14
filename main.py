@@ -573,7 +573,7 @@ class NormalizerWorker(QObject):
         try:
             normalizer = DICOMNormalizer(
                 target_manufacturer=self._target,
-                verbose=False,  # 由 UI 信号替代控制台输出
+                verbose=True,   # 临时开启详细日志以便排查多帧导出问题
             )
             # 手动发送进度消息（覆盖 normalizer 的 verbose 输出）
             self.progress.emit("步骤 1/6: 读取并排序切片...")

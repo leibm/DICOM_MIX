@@ -599,6 +599,9 @@ class DICOMNormalizer:
         # 缓存多帧源文件的完整 Dataset，避免重复读取
         multiframe_cache: Dict[str, Dataset] = {}
 
+        saved_count = 0
+        failed_frames: List[Tuple[int, str, str]] = []
+
         for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
             orig_path = getattr(ds, "_multiframe_source_path", src_path)
@@ -610,8 +613,10 @@ class DICOMNormalizer:
                     full_ds = pydicom.dcmread(orig_path, force=True)
                     multiframe_cache[orig_path] = full_ds
             except Exception as e:
+                err_msg = f"重新读取原始文件失败: {e}"
+                failed_frames.append((idx, os.path.basename(orig_path), err_msg))
                 if self.verbose:
-                    print(f"  警告：重新读取原始文件失败 {orig_path}，跳过 — {e}")
+                    print(f"  警告：{err_msg}")
                 continue
 
             if frame_idx is not None:
@@ -625,6 +630,7 @@ class DICOMNormalizer:
 
                 # 提取指定帧的像素数据
                 pixel_extracted = False
+                extraction_log: List[str] = []
                 try:
                     ts = getattr(getattr(full_ds, 'file_meta', None), 'TransferSyntaxUID', None)
                     is_uncompressed = (
@@ -642,55 +648,79 @@ class DICOMNormalizer:
                         total_frames = int(getattr(full_ds, 'NumberOfFrames', 1))
 
                         if rows == 0 or columns == 0:
-                            raise ValueError("Rows 或 Columns 为 0")
-
-                        bytes_per_sample = bits // 8
-                        row_bytes = columns * samples * bytes_per_sample
-                        if row_bytes % 2 == 1:
-                            row_bytes += 1
-                        bytes_per_frame = row_bytes * rows
-
-                        expected_total = bytes_per_frame * total_frames
-                        actual_len = len(pixel_data)
-
-                        # 更宽松的长度匹配：允许尾部有少量填充字节
-                        if actual_len == expected_total:
-                            pass
+                            extraction_log.append(f"uncompressed: Rows={rows}, Columns={columns} 无效")
                         else:
-                            # 尝试无行填充的 layout
-                            bytes_per_frame_raw = columns * samples * bytes_per_sample * rows
-                            expected_total_raw = bytes_per_frame_raw * total_frames
-                            if actual_len == expected_total_raw:
-                                bytes_per_frame = bytes_per_frame_raw
-                            elif actual_len >= expected_total and actual_len <= expected_total + total_frames * 2:
-                                # 允许每帧最多 2 字节尾部填充，仍按标准行填充计算偏移
-                                pass
-                            elif actual_len >= expected_total_raw and actual_len <= expected_total_raw + total_frames * 2:
-                                bytes_per_frame = bytes_per_frame_raw
-                            else:
-                                # 字节长度不匹配，回退到 pixel_array
-                                raise ValueError(
-                                    f"PixelData 长度不匹配 (将回退到 pixel_array): "
-                                    f"实际 {actual_len} != 期望 {expected_total} "
-                                    f"(frames={total_frames}, rows={rows}, cols={columns}, bits={bits})"
-                                )
+                            bytes_per_sample = bits // 8
+                            row_bytes = columns * samples * bytes_per_sample
+                            if row_bytes % 2 == 1:
+                                row_bytes += 1
+                            bytes_per_frame = row_bytes * rows
 
-                        start = frame_idx * bytes_per_frame
-                        end = start + bytes_per_frame
-                        if end > actual_len:
-                            raise ValueError(f"帧 {frame_idx} 越界: {end} > {actual_len}")
-                        output_ds.PixelData = pixel_data[start:end]
-                        pixel_extracted = True
+                            expected_total = bytes_per_frame * total_frames
+                            actual_len = len(pixel_data)
+
+                            # 更宽松的长度匹配：允许尾部有少量填充字节
+                            if actual_len == expected_total:
+                                pass
+                            else:
+                                # 尝试无行填充的 layout
+                                bytes_per_frame_raw = columns * samples * bytes_per_sample * rows
+                                expected_total_raw = bytes_per_frame_raw * total_frames
+                                if actual_len == expected_total_raw:
+                                    bytes_per_frame = bytes_per_frame_raw
+                                elif actual_len >= expected_total and actual_len <= expected_total + total_frames * 2:
+                                    pass
+                                elif actual_len >= expected_total_raw and actual_len <= expected_total_raw + total_frames * 2:
+                                    bytes_per_frame = bytes_per_frame_raw
+                                else:
+                                    extraction_log.append(
+                                        f"uncompressed: 长度不匹配 "
+                                        f"(实际 {actual_len} != 期望 {expected_total}, "
+                                        f"frames={total_frames}, rows={rows}, cols={columns}, bits={bits})"
+                                    )
+                                    bytes_per_frame = 0
+
+                            if bytes_per_frame > 0:
+                                start = frame_idx * bytes_per_frame
+                                end = start + bytes_per_frame
+                                if end <= actual_len:
+                                    output_ds.PixelData = pixel_data[start:end]
+                                    pixel_extracted = True
+                                else:
+                                    extraction_log.append(f"uncompressed: 帧 {frame_idx} 越界 ({end} > {actual_len})")
 
                     if not pixel_extracted:
                         # 压缩数据 或 未压缩回退：使用 pixel_array 自动解压
-                        pixel_arr = full_ds.pixel_array
-                        if pixel_arr.ndim == 3:
+                        try:
+                            pixel_arr = full_ds.pixel_array
+                        except Exception as pa_err:
+                            extraction_log.append(f"pixel_array: 解码失败 — {pa_err}")
+                            raise
+
+                        # 检查 pixel_array 返回的帧数
+                        if pixel_arr.ndim == 2:
+                            # 单帧结果（可能多帧解码异常）
+                            extraction_log.append(f"pixel_array: 返回2维数组 {pixel_arr.shape}，仅1帧可用")
+                            if frame_idx == 0:
+                                frame_arr = pixel_arr
+                            else:
+                                raise IndexError(f"帧 {frame_idx} 不可用（pixel_array 仅返回1帧）")
+                        elif pixel_arr.ndim == 3:
+                            if pixel_arr.shape[0] <= frame_idx:
+                                raise IndexError(
+                                    f"帧索引越界: {frame_idx} >= {pixel_arr.shape[0]} "
+                                    f"(pixel_array 形状: {pixel_arr.shape})"
+                                )
                             frame_arr = pixel_arr[frame_idx]
                         elif pixel_arr.ndim == 4:
+                            if pixel_arr.shape[0] <= frame_idx:
+                                raise IndexError(
+                                    f"帧索引越界: {frame_idx} >= {pixel_arr.shape[0]} "
+                                    f"(pixel_array 形状: {pixel_arr.shape})"
+                                )
                             frame_arr = pixel_arr[frame_idx]
                         else:
-                            raise ValueError(f"pixel_array 维度异常: {pixel_arr.ndim}")
+                            raise ValueError(f"pixel_array 维度异常: {pixel_arr.ndim}, 形状: {pixel_arr.shape}")
 
                         # 保持原始 dtype
                         if frame_arr.dtype == np.uint8:
@@ -712,8 +742,10 @@ class DICOMNormalizer:
                         pixel_extracted = True
 
                 except Exception as e:
-                    # 关键路径：始终打印警告，方便排查
-                    print(f"  [!] 提取帧 {frame_idx} 像素数据失败 ({os.path.basename(orig_path)}) — {e}")
+                    err_detail = "; ".join(extraction_log) if extraction_log else str(e)
+                    failed_frames.append((frame_idx if frame_idx is not None else idx, os.path.basename(orig_path), err_detail))
+                    if self.verbose:
+                        print(f"  [!] 提取帧 {frame_idx} 像素数据失败 ({os.path.basename(orig_path)}) — {err_detail}")
                     continue
 
                 output_ds.NumberOfFrames = 1
@@ -754,10 +786,22 @@ class DICOMNormalizer:
 
             try:
                 output_ds.save_as(out_path, write_like_original=False)
+                saved_count += 1
             except Exception as e:
+                failed_frames.append((frame_idx if frame_idx is not None else idx, os.path.basename(orig_path), f"保存失败: {e}"))
                 if self.verbose:
                     print(f"  警告：保存失败 {filename} — {e}")
                 continue
+
+        if failed_frames and not self.verbose:
+            # 非 verbose 模式下也输出关键失败摘要
+            unique_errors = {}
+            for fidx, fname, err in failed_frames:
+                key = err[:80]
+                unique_errors[key] = unique_errors.get(key, 0) + 1
+            print(f"\n[!] 归一化完成，但 {len(failed_frames)} 帧处理失败（成功 {saved_count}/{len(datasets)}）：")
+            for err, count in list(unique_errors.items())[:5]:
+                print(f"    ({count} 次) {err}")
 
         slice_spacing = self._compute_slice_spacing(datasets)
 
@@ -765,21 +809,27 @@ class DICOMNormalizer:
             "input_dir": source_label,
             "output_dir": output_dir,
             "slice_count": len(datasets),
+            "saved_count": saved_count,
+            "failed_count": len(failed_frames),
+            "failed_frames": failed_frames[:10],
             "study_uid": study_uid,
             "series_uid": new_series_uid,
             "slice_spacing_mm": slice_spacing,
             "target_manufacturer": self.target,
-            "status": "success",
+            "status": "success" if saved_count == len(datasets) else "partial",
         }
 
-        if self.verbose:
+        if self.verbose or failed_frames:
             print(f"\n{'=' * 60}")
             print(f"归一化完成！")
-            print(f"  输出切片数: {summary['slice_count']}")
-            print(f"  层间距: {summary['slice_spacing_mm']:.2f} mm")
-            print(f"  Study UID: ...{study_uid[-12:]}")
+            print(f"  期望切片数: {len(datasets)}")
+            print(f"  成功保存:   {saved_count}")
+            if failed_frames:
+                print(f"  处理失败:   {len(failed_frames)}")
+            print(f"  层间距:     {summary['slice_spacing_mm']:.2f} mm")
+            print(f"  Study UID:  ...{study_uid[-12:]}")
             print(f"  Series UID: ...{new_series_uid[-12:]}")
-            print(f"  输出目录: {output_dir}")
+            print(f"  输出目录:   {output_dir}")
             print(f"{'=' * 60}\n")
 
         return summary

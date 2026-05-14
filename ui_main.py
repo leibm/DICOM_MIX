@@ -992,15 +992,24 @@ class NormalizerDialog(QDialog):
 
     def on_finished(self, summary: dict):
         slice_count = summary.get("slice_count", 0)
+        saved_count = summary.get("saved_count", slice_count)
+        failed_count = summary.get("failed_count", 0)
         spacing = summary.get("slice_spacing_mm", 0.0)
         output_dir = summary.get("output_dir", "")
         msg = (
             f"归一化完成！\n\n"
-            f"输出切片数: {slice_count}\n"
-            f"层间距: {spacing:.2f} mm\n"
-            f"输出目录: {output_dir}"
+            f"期望切片数: {slice_count}\n"
+            f"成功保存:   {saved_count}\n"
         )
-        self.lbl_status.setText("归一化完成")
+        if failed_count > 0:
+            msg += f"处理失败:   {failed_count}\n"
+            failed_frames = summary.get("failed_frames", [])
+            if failed_frames:
+                msg += "\n失败详情:\n"
+                for fidx, fname, err in failed_frames[:5]:
+                    msg += f"  帧 {fidx}: {err[:60]}...\n"
+        msg += f"\n层间距: {spacing:.2f} mm\n输出目录: {output_dir}"
+        self.lbl_status.setText("归一化完成" + (f" ({failed_count} 帧失败)" if failed_count > 0 else ""))
         self.progress_bar.setValue(100)
         self.btn_start.setEnabled(True)
         self.btn_cancel.setEnabled(True)
