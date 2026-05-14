@@ -676,8 +676,13 @@ class DICOMNormalizer:
             output_ds.file_meta.MediaStorageSOPInstanceUID = output_ds.SOPInstanceUID
             output_ds.file_meta.TransferSyntaxUID = target_ts
             output_ds.file_meta.FileMetaInformationVersion = b'\x00\x01'
-            output_ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
-            output_ds.file_meta.ImplementationVersionName = pydicom.uid.PYDICOM_IMPLEMENTATION_NAME
+            output_ds.file_meta.ImplementationClassUID = getattr(
+                pydicom.uid, 'PYDICOM_IMPLEMENTATION_UID',
+                pydicom.uid.UID('1.2.826.0.1.3680043.8.498.1')
+            )
+            output_ds.file_meta.ImplementationVersionName = getattr(
+                pydicom.uid, 'PYDICOM_IMPLEMENTATION_NAME', 'PYDICOM'
+            )
 
             # 添加 CT Image Storage IOD 必需/常用标签
             if "Modality" not in output_ds:
