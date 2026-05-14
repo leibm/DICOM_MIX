@@ -590,8 +590,8 @@ class DICOMNormalizer:
         # 统一使用 Explicit VR Little Endian 写入（最广泛的兼容性）
         target_ts = ExplicitVRLittleEndian
 
-        # 缓存多帧源文件的像素数据，避免重复读取
-        multiframe_cache: Dict[str, np.ndarray] = {}
+        # 缓存多帧源文件的完整 Dataset，避免重复读取
+        multiframe_cache: Dict[str, Dataset] = {}
 
         for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
@@ -600,43 +600,70 @@ class DICOMNormalizer:
                 # ---------- 多帧展开切片 ----------
                 orig_path = getattr(ds, "_multiframe_source_path", src_path)
 
-                # 从缓存或重新读取获取完整多帧像素数组
-                pixel_arr = multiframe_cache.get(orig_path)
-                if pixel_arr is None:
+                # 从缓存或重新读取获取完整多帧原始 Dataset
+                full_ds = multiframe_cache.get(orig_path)
+                if full_ds is None:
                     try:
                         full_ds = pydicom.dcmread(orig_path, force=True)
-                        pixel_arr = full_ds.pixel_array
-                        multiframe_cache[orig_path] = pixel_arr
+                        multiframe_cache[orig_path] = full_ds
                     except Exception as e:
                         if self.verbose:
-                            print(f"  警告：读取多帧像素失败 {orig_path}，跳过 — {e}")
+                            print(f"  警告：重新读取原始文件失败 {orig_path}，跳过 — {e}")
                         continue
 
-                # 提取对应帧的 2D 像素数据
+                # 从原始 PixelData 直接提取对应帧的字节（避免 pixel_array 的 rescale 转换）
                 try:
-                    if pixel_arr.ndim == 3:          # (frames, h, w)
-                        frame_arr = pixel_arr[frame_idx]
-                    elif pixel_arr.ndim == 4:        # (frames, h, w, samples)
-                        frame_arr = pixel_arr[frame_idx]
-                    else:
-                        frame_arr = pixel_arr
-                except IndexError as e:
+                    orig_pixel_data = full_ds.PixelData
+                    bits_allocated = int(getattr(full_ds, 'BitsAllocated', 16))
+                    samples_per_pixel = int(getattr(full_ds, 'SamplesPerPixel', 1))
+                    rows = int(getattr(full_ds, 'Rows', 0))
+                    columns = int(getattr(full_ds, 'Columns', 0))
+                    total_frames = int(getattr(full_ds, 'NumberOfFrames', 1))
+
+                    if rows == 0 or columns == 0:
+                        raise ValueError("Rows 或 Columns 为 0")
+
+                    bytes_per_sample = bits_allocated // 8
+                    # DICOM 行填充：每行字节数必须为偶数
+                    row_bytes = columns * samples_per_pixel * bytes_per_sample
+                    if row_bytes % 2 == 1:
+                        row_bytes += 1
+                    bytes_per_frame = row_bytes * rows
+
+                    # 验证总字节数
+                    expected_total = bytes_per_frame * total_frames
+                    if len(orig_pixel_data) != expected_total:
+                        # 尝试不计算行填充（某些数据可能未填充）
+                        bytes_per_frame = columns * samples_per_pixel * bytes_per_sample * rows
+                        expected_total = bytes_per_frame * total_frames
+                        if len(orig_pixel_data) != expected_total:
+                            raise ValueError(
+                                f"PixelData 长度不匹配: "
+                                f"实际 {len(orig_pixel_data)} != 期望 {expected_total}"
+                            )
+
+                    start = frame_idx * bytes_per_frame
+                    end = start + bytes_per_frame
+                    frame_pixel_data = orig_pixel_data[start:end]
+
+                    # 注入原始像素字节
+                    ds.PixelData = frame_pixel_data
+
+                    # 保留原始像素相关标签（确保与 PixelData 字节格式严格匹配）
+                    for pixel_tag in (
+                        'BitsAllocated', 'BitsStored', 'HighBit', 'PixelRepresentation',
+                        'SamplesPerPixel', 'PhotometricInterpretation', 'Rows', 'Columns',
+                        'PlanarConfiguration',
+                    ):
+                        if pixel_tag in full_ds:
+                            setattr(ds, pixel_tag, getattr(full_ds, pixel_tag))
+
+                except Exception as e:
                     if self.verbose:
-                        print(f"  警告：帧索引越界 {orig_path}[{frame_idx}] — {e}")
+                        print(f"  警告：提取帧 {frame_idx} 像素数据失败 — {e}")
                     continue
 
-                # ds 已是单帧副本（含处理后的头信息），只需注入像素数据
-                ds.PixelData = frame_arr.tobytes()
-                ds.Rows = frame_arr.shape[0]
-                ds.Columns = frame_arr.shape[1]
-
-                # 确保灰度相关标签正确（CT 通常为 1 sample）
-                if "SamplesPerPixel" not in ds:
-                    ds.SamplesPerPixel = 1
-                if "PhotometricInterpretation" not in ds:
-                    ds.PhotometricInterpretation = "MONOCHROME2"
-
-                # 清理残留的多帧标记（_expand_multiframe 已处理大部分，这里再做保险）
+                # 清理残留的多帧标记
                 for tag_name in ("NumberOfFrames", "PerFrameFunctionalGroupsSequence",
                                  "SharedFunctionalGroupsSequence"):
                     if tag_name in ds:
