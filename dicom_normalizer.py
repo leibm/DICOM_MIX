@@ -603,7 +603,7 @@ class DICOMNormalizer:
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
             orig_path = getattr(ds, "_multiframe_source_path", src_path)
 
-            # ---------- 读取完整原始文件获取像素 ----------
+            # 读取完整原始文件
             try:
                 full_ds = multiframe_cache.get(orig_path)
                 if full_ds is None:
@@ -614,84 +614,78 @@ class DICOMNormalizer:
                     print(f"  警告：重新读取原始文件失败 {orig_path}，跳过 — {e}")
                 continue
 
-            # 使用 pixel_array 自动处理压缩/解压
-            try:
-                pixel_arr = full_ds.pixel_array
-            except Exception as e:
-                if self.verbose:
-                    print(f"  警告：读取 pixel_array 失败 {orig_path} — {e}")
-                continue
-
-            # 多帧：提取指定帧
             if frame_idx is not None:
-                if pixel_arr.ndim == 3:
-                    pixel_arr = pixel_arr[frame_idx]
-                elif pixel_arr.ndim == 4:
-                    pixel_arr = pixel_arr[frame_idx]
+                # ---------- 多帧展开切片 ----------
+                # 复制完整原始 Dataset，避免修改缓存中的 multi-frame 源
+                output_ds = full_ds.copy()
+                output_ds.is_little_endian = getattr(full_ds, "is_little_endian", True)
+                output_ds.is_implicit_VR = getattr(full_ds, "is_implicit_VR", False)
+                if hasattr(full_ds, "file_meta") and full_ds.file_meta is not None:
+                    output_ds.file_meta = full_ds.file_meta.copy()
 
-            # 逆 rescale 转换，恢复原始存储值
-            # pixel_array 默认已应用 modality LUT（RescaleSlope/Intercept）
-            slope = float(getattr(full_ds, 'RescaleSlope', 1))
-            intercept = float(getattr(full_ds, 'RescaleIntercept', 0))
-            if slope != 1 or intercept != 0:
-                raw_arr = (pixel_arr.astype(np.float64) - intercept) / slope
-                raw_arr = np.rint(raw_arr).astype(np.uint16)
+                # 使用 pixel_array 提取指定帧（自动处理 JPEG/RLE 等压缩）
+                try:
+                    pixel_arr = full_ds.pixel_array
+                    if pixel_arr.ndim == 3:
+                        frame_arr = pixel_arr[frame_idx]
+                    elif pixel_arr.ndim == 4:
+                        frame_arr = pixel_arr[frame_idx]
+                    else:
+                        frame_arr = pixel_arr
+                except Exception as e:
+                    if self.verbose:
+                        print(f"  警告：提取帧 {frame_idx} pixel_array 失败 — {e}")
+                    continue
+
+                # 保持原始 dtype，不做任何 rescale 转换
+                if frame_arr.dtype == np.uint8:
+                    target_dtype = np.uint8
+                elif frame_arr.dtype == np.int16:
+                    target_dtype = np.int16
+                else:
+                    target_dtype = np.uint16
+
+                if frame_arr.dtype != target_dtype:
+                    frame_arr = frame_arr.astype(target_dtype)
+
+                # 大端数据转小端（DICOM 标准以小端为主）
+                if target_dtype in (np.uint16, np.int16) and frame_arr.dtype.byteorder == '>':
+                    frame_arr = frame_arr.byteswap().newbyteorder()
+
+                output_ds.PixelData = frame_arr.tobytes()
+                output_ds.Rows = frame_arr.shape[0]
+                output_ds.Columns = frame_arr.shape[1]
+                output_ds.NumberOfFrames = 1
+
+                # 移除仅适用于多帧的标签
+                for tag_name in (
+                    "PerFrameFunctionalGroupsSequence",
+                    "SharedFunctionalGroupsSequence",
+                    "FrameContentSequence",
+                    "FrameAcquisitionSequence",
+                    "DimensionOrganizationSequence",
+                    "DimensionIndexSequence",
+                ):
+                    if tag_name in output_ds:
+                        delattr(output_ds, tag_name)
+
+                # 合并已处理的头信息（UID、厂商、几何、rescalse 等）
+                for tag in ds.keys():
+                    output_ds[tag] = ds[tag]
+
             else:
-                raw_arr = pixel_arr.astype(np.uint16)
+                # ---------- 普通单帧文件：沿用 V4.0 方案 ----------
+                # 直接复用原始完整 Dataset，合并已处理头信息，保留原始像素数据
+                output_ds = full_ds
+                for tag in ds.keys():
+                    output_ds[tag] = ds[tag]
 
-            # 小端字节序（pydicom 默认小端）
-            if raw_arr.dtype.byteorder == '>':
-                raw_arr = raw_arr.byteswap().newbyteorder()
-
-            # 将像素数据注入已处理的头信息 Dataset
-            ds.PixelData = raw_arr.tobytes()
-
-            # 统一像素相关标签（与 uint16 MONOCHROME2 严格匹配）
-            ds.Rows = raw_arr.shape[0]
-            ds.Columns = raw_arr.shape[1]
-            ds.BitsAllocated = 16
-            ds.BitsStored = 16
-            ds.HighBit = 15
-            ds.PixelRepresentation = 0
-            ds.SamplesPerPixel = 1
-            ds.PhotometricInterpretation = "MONOCHROME2"
-
-            # 清理多帧残留标签
-            if frame_idx is not None:
-                for tag_name in ("NumberOfFrames", "PerFrameFunctionalGroupsSequence",
-                                 "SharedFunctionalGroupsSequence"):
-                    if tag_name in ds:
-                        delattr(ds, tag_name)
-
-            output_ds = ds
-
-            # 统一设置编码属性（Explicit VR Little Endian）
-            output_ds.is_little_endian = True
-            output_ds.is_implicit_VR = False
-
-            # 确保 file_meta 完整
+            # 确保 file_meta 存在且 Transfer Syntax 已更新
             if not hasattr(output_ds, "file_meta") or output_ds.file_meta is None:
                 output_ds.file_meta = Dataset()
             output_ds.file_meta.MediaStorageSOPClassUID = self.CT_IMAGE_STORAGE_UID
             output_ds.file_meta.MediaStorageSOPInstanceUID = output_ds.SOPInstanceUID
             output_ds.file_meta.TransferSyntaxUID = target_ts
-            output_ds.file_meta.FileMetaInformationVersion = b'\x00\x01'
-            output_ds.file_meta.ImplementationClassUID = getattr(
-                pydicom.uid, 'PYDICOM_IMPLEMENTATION_UID',
-                pydicom.uid.UID('1.2.826.0.1.3680043.8.498.1')
-            )
-            output_ds.file_meta.ImplementationVersionName = getattr(
-                pydicom.uid, 'PYDICOM_IMPLEMENTATION_NAME', 'PYDICOM'
-            )
-
-            # 添加 CT Image Storage IOD 必需/常用标签
-            if "Modality" not in output_ds:
-                output_ds.add_new(pydicom.tag.Tag(0x0008, 0x0060), "CS", "CT")
-            else:
-                output_ds.Modality = "CT"
-
-            if "ImageType" not in output_ds:
-                output_ds.add_new(pydicom.tag.Tag(0x0008, 0x0008), "CS", ["ORIGINAL", "PRIMARY", "AXIAL"])
 
             # 标准化文件命名
             filename = f"IM{idx + 1:04d}.dcm"
