@@ -24,8 +24,25 @@ from pynetdicom import AE, debug_logger
 from pynetdicom.sop_class import (
     PatientRootQueryRetrieveInformationModelFind,
     StudyRootQueryRetrieveInformationModelFind,
+    PatientStudyOnlyQueryRetrieveInformationModelFind,
     ModalityWorklistInformationFind,
     Verification,
+    StudyRootQueryRetrieveInformationModelMove,
+    PatientRootQueryRetrieveInformationModelMove,
+    PatientStudyOnlyQueryRetrieveInformationModelMove,
+    # 常用 Storage SOP Classes（C-MOVE 协商时需要）
+    CTImageStorage,
+    MRImageStorage,
+    SecondaryCaptureImageStorage,
+    XRayAngiographicImageStorage,
+    XRayRadiofluoroscopicImageStorage,
+    DigitalXRayImageStorageForPresentation,
+    EnhancedMRImageStorage,
+    EnhancedCTImageStorage,
+    UltrasoundImageStorage,
+    NuclearMedicineImageStorage,
+    PositronEmissionTomographyImageStorage,
+    RTImageStorage,
 )
 from pydicom.dataset import Dataset
 from pydicom.uid import ImplicitVRLittleEndian, ExplicitVRLittleEndian
@@ -137,38 +154,51 @@ class CFindWorker(QObject):
         return mapping.get(date_range.upper(), date_range)
 
     def _build_query_dataset(self) -> Dataset:
-        """根据用户输入构建查询数据集，兼容大多数 DSA/PACS 设备。"""
+        """
+        根据用户输入构建查询数据集，兼容不同厂商 DICOM 实现。
+
+        厂商差异处理：
+        - 西门子：对通配符和空标签较宽容
+        - GE：空值字段必须省略（不能发 * 或空字符串），否则返回 0xA700
+        - 飞利浦：对标签存在性要求严格，QueryRetrieveLevel 必须正确
+        """
         ds = Dataset()
         ds.QueryRetrieveLevel = "STUDY"
 
-        # 过滤键：有值时用精确匹配，空值时用 * 通配符（比省略键或发空字符串更兼容）
+        # 过滤键：有值时发送，空值时**省略**标签（GE/飞利浦设备要求）
         patient_name = self.query_params.get("patient_name", "").strip()
-        ds.PatientName = patient_name if patient_name else "*"
+        if patient_name:
+            ds.PatientName = patient_name
 
         patient_id = self.query_params.get("patient_id", "").strip()
-        ds.PatientID = patient_id if patient_id else "*"
+        if patient_id:
+            ds.PatientID = patient_id
 
         accession = self.query_params.get("accession_number", "").strip()
-        ds.AccessionNumber = accession if accession else "*"
-
-        # 返回键：精简到最通用的几个，避免设备因不支持某些返回键而整盘拒绝
-        ds.StudyInstanceUID = ""
-        ds.StudyDate = ""
-        ds.StudyDescription = ""
-        ds.PatientSex = ""
-        ds.PatientBirthDate = ""
+        if accession:
+            ds.AccessionNumber = accession
 
         # 日期范围
         date_range = self.query_params.get("study_date_range", "").strip()
         if date_range:
             ds.StudyDate = self._format_study_date(date_range)
-        else:
-            ds.StudyDate = "*"  # 无日期限制时显式发通配符
 
-        # 模态（DSA 设备常用过滤条件）
+        # 模态（过滤键，只在有值时发送）
         modality = self.query_params.get("modality", "").strip()
         if modality:
             ds.Modality = modality
+
+        # 返回键：核心字段（必须为空字符串表示请求返回）
+        ds.StudyInstanceUID = ""
+        ds.StudyDate = getattr(ds, "StudyDate", "")  # 若上面已设日期范围则保留
+        ds.StudyDescription = ""
+        ds.PatientSex = ""
+        ds.PatientBirthDate = ""
+
+        # 扩展返回键（提升兼容性，不支持的设备会自动忽略）
+        ds.ModalitiesInStudy = ""
+        ds.NumberOfStudyRelatedSeries = ""
+        ds.NumberOfStudyRelatedInstances = ""
 
         return ds
 
@@ -214,18 +244,60 @@ class CFindWorker(QObject):
                 raise RuntimeError(error_msg)
         return results
 
+    def _try_find_with_model(self, assoc, ds: Dataset, query_model, model_name: str) -> tuple:
+        """
+        尝试使用指定查询模型执行 C-FIND。
+
+        Returns
+        -------
+        (results_list, success_bool, status_hex_str)
+        """
+        try:
+            logger.info(f"尝试 {model_name} C-FIND...")
+            results = self._send_c_find(assoc, ds, query_model)
+            return results, True, "0x0000"
+        except RuntimeError as e:
+            # 提取状态码
+            msg = str(e)
+            status_hex = "Unknown"
+            if "0x" in msg:
+                import re
+                m = re.search(r"0x([0-9A-Fa-f]{4})", msg)
+                if m:
+                    status_hex = f"0x{m.group(1).upper()}"
+            logger.warning(f"{model_name} C-FIND 失败: {msg}")
+            return [], False, status_hex
+
     def run(self):
-        """执行 C-FIND 查询，Study Root 失败时回退到 Patient Root。"""
+        """
+        执行 C-FIND 查询，支持多厂商协议自适应。
+
+        策略：
+        1. 同时协商 Study Root / Patient Root / PatientStudyOnly
+        2. 同时协商 Implicit VR 和 Explicit VR（飞利浦旧设备偏好 Implicit）
+        3. 按 Study Root → Patient Root → PatientStudyOnly 顺序尝试
+        4. 如果某模型 association 被接受但查询返回错误（如 0xA700），
+           尝试下一个模型
+        """
         try:
             logger.info(f"开始 C-FIND 查询: {self.query_params} -> {self.pacs}")
 
             ds = self._build_query_dataset()
             logger.debug(f"C-FIND 查询数据集: {ds}")
 
-            # 创建 Application Entity
+            # 创建 Application Entity，同时协商多种查询模型和传输语法
             ae = AE(ae_title=self.pacs.local_ae_title)
-            ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
-            ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
+
+            # 查询模型：按优先级添加
+            find_models = [
+                (StudyRootQueryRetrieveInformationModelFind, "StudyRoot"),
+                (PatientRootQueryRetrieveInformationModelFind, "PatientRoot"),
+                (PatientStudyOnlyQueryRetrieveInformationModelFind, "PatientStudyOnly"),
+            ]
+            for model, _ in find_models:
+                # 同时协商 Implicit VR 和 Explicit VR
+                ae.add_requested_context(model, ImplicitVRLittleEndian)
+                ae.add_requested_context(model, ExplicitVRLittleEndian)
 
             assoc = ae.associate(self.pacs.host, self.pacs.port, ae_title=self.pacs.ae_title)
             if not assoc.is_established:
@@ -238,29 +310,46 @@ class CFindWorker(QObject):
             accepted_abstract_syntaxes = {
                 ctx.abstract_syntax for ctx in assoc.accepted_contexts
             }
-            study_root_accepted = StudyRootQueryRetrieveInformationModelFind in accepted_abstract_syntaxes
-            patient_root_accepted = PatientRootQueryRetrieveInformationModelFind in accepted_abstract_syntaxes
+            accepted_models = []
+            for model, name in find_models:
+                if model in accepted_abstract_syntaxes:
+                    accepted_models.append((model, name))
+                    logger.info(f"  主机接受查询模型: {name}")
 
-            logger.info(
-                f"Association 已建立，接受的 context: "
-                f"StudyRoot={study_root_accepted}, PatientRoot={patient_root_accepted}"
-            )
+            if not accepted_models:
+                error_msg = "主机未接受任何支持的查询模型（Study Root / Patient Root / PatientStudyOnly）"
+                logger.error(error_msg)
+                self.error.emit(error_msg)
+                assoc.release()
+                return
+
+            # 记录协商的传输语法
+            for ctx in assoc.accepted_contexts:
+                if hasattr(ctx, 'transfer_syntax') and ctx.transfer_syntax:
+                    logger.info(f"  协商传输语法: {ctx.transfer_syntax.name}")
 
             results = []
+            last_error = None
             try:
-                if study_root_accepted:
-                    # 优先使用 Study Root（现代设备主流）
-                    logger.info("使用 Study Root C-FIND...")
-                    results = self._send_c_find(assoc, ds, StudyRootQueryRetrieveInformationModelFind)
-                elif patient_root_accepted:
-                    # Study Root 未被接受时回退到 Patient Root（老旧设备）
-                    logger.info("Study Root 未被接受，回退到 Patient Root C-FIND...")
-                    results = self._send_c_find(assoc, ds, PatientRootQueryRetrieveInformationModelFind)
-                else:
-                    error_msg = "主机未接受 Study Root 或 Patient Root 查询模型"
-                    logger.error(error_msg)
-                    self.error.emit(error_msg)
-                    return
+                # 按优先级尝试每个被接受的查询模型
+                for model, name in accepted_models:
+                    results, success, status = self._try_find_with_model(assoc, ds, model, name)
+                    if success and results:
+                        logger.info(f"{name} C-FIND 成功，返回 {len(results)} 条记录")
+                        break
+                    elif success and not results:
+                        # 查询成功但无结果，这可能是正确的（确实没有匹配数据）
+                        # 但为了兼容性，如果还有其他模型可试，继续尝试
+                        logger.info(f"{name} C-FIND 成功但无结果，尝试下一个模型...")
+                        continue
+                    else:
+                        last_error = f"{name} C-FIND 失败，状态码: {status}"
+                        logger.warning(f"{name} 失败，尝试下一个模型...")
+                        continue
+
+                # 如果所有模型都尝试过了但没有任何结果
+                if not results and last_error:
+                    logger.warning(f"所有查询模型均已尝试，最终错误: {last_error}")
 
             finally:
                 assoc.release()
@@ -628,17 +717,19 @@ class CMoveWorker(QObject):
     error = Signal(str)
 
     def __init__(self, remote_config: PacsNodeConfig, study_uid: str,
-                 move_dest: str, parent: Optional[QObject] = None):
+                 move_dest: str, patient_id: str = "", parent: Optional[QObject] = None):
         """
         参数：
             remote_config: 远端节点配置（DSA 工作站）
             study_uid: 要拉取的 StudyInstanceUID
             move_dest: C-MOVE 目标 AE Title（本机 SCP 的 AE Title）
+            patient_id: 患者 ID（GE 等设备 C-MOVE 时需要）
         """
         super().__init__(parent)
         self.remote = remote_config
         self.study_uid = study_uid
         self.move_dest = move_dest
+        self.patient_id = patient_id
 
     def _execute_c_move(self, assoc, ds, query_model) -> tuple:
         """
@@ -701,22 +792,63 @@ class CMoveWorker(QObject):
 
         return max_completed, max(max_total, max_completed, 1), True, None
 
+    def _try_c_move(self, assoc, ds, query_model, model_name: str) -> tuple:
+        """尝试使用指定模型执行 C-MOVE，返回 (completed, total, success, error_msg)"""
+        try:
+            logger.info(f"尝试 {model_name} C-MOVE...")
+            return self._execute_c_move(assoc, ds, query_model)
+        except Exception as e:
+            logger.warning(f"{model_name} C-MOVE 异常: {e}")
+            return 0, 0, False, f"{model_name} C-MOVE 异常: {e}"
+
     def run(self):
-        """执行 C-MOVE 请求，Study Root 失败时回退到 Patient Root。"""
+        """
+        执行 C-MOVE 请求，支持多厂商协议自适应。
+
+        策略：
+        1. 同时协商 Study Root / Patient Root / PatientStudyOnly Move
+        2. 同时协商 Implicit VR 和 Explicit VR
+        3. 添加常用 Storage SOP Classes（某些设备需要）
+        4. 请求数据集包含 StudyInstanceUID 和可选的 PatientID
+        5. 按 Study Root → Patient Root → PatientStudyOnly 顺序尝试
+        """
         ae = None
         assoc = None
         try:
-            logger.info(f"开始 C-MOVE: study={self.study_uid}, 目标={self.move_dest}")
+            logger.info(f"开始 C-MOVE: study={self.study_uid}, patient_id={self.patient_id}, 目标={self.move_dest}")
 
-            from pynetdicom.sop_class import (
-                StudyRootQueryRetrieveInformationModelMove,
-                PatientRootQueryRetrieveInformationModelMove,
-            )
             from pydicom import Dataset
 
             ae = AE(ae_title=self.remote.local_ae_title)
-            ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
-            ae.add_requested_context(PatientRootQueryRetrieveInformationModelMove)
+
+            # 查询/检索模型：按优先级添加
+            move_models = [
+                (StudyRootQueryRetrieveInformationModelMove, "StudyRoot"),
+                (PatientRootQueryRetrieveInformationModelMove, "PatientRoot"),
+                (PatientStudyOnlyQueryRetrieveInformationModelMove, "PatientStudyOnly"),
+            ]
+            for model, _ in move_models:
+                ae.add_requested_context(model, ImplicitVRLittleEndian)
+                ae.add_requested_context(model, ExplicitVRLittleEndian)
+
+            # 添加常用 Storage SOP Classes（某些设备 C-MOVE 协商时需要看到这些）
+            storage_classes = [
+                CTImageStorage,
+                MRImageStorage,
+                SecondaryCaptureImageStorage,
+                XRayAngiographicImageStorage,
+                XRayRadiofluoroscopicImageStorage,
+                DigitalXRayImageStorageForPresentation,
+                EnhancedMRImageStorage,
+                EnhancedCTImageStorage,
+                UltrasoundImageStorage,
+                NuclearMedicineImageStorage,
+                PositronEmissionTomographyImageStorage,
+                RTImageStorage,
+            ]
+            for sop_class in storage_classes:
+                ae.add_requested_context(sop_class, ImplicitVRLittleEndian)
+                ae.add_requested_context(sop_class, ExplicitVRLittleEndian)
 
             assoc = ae.associate(
                 self.remote.host, self.remote.port,
@@ -728,28 +860,56 @@ class CMoveWorker(QObject):
                 self.error.emit(error_msg)
                 return
 
+            # 检查接受了哪些 Move Context
+            accepted_abstract_syntaxes = {
+                ctx.abstract_syntax for ctx in assoc.accepted_contexts
+            }
+            accepted_models = []
+            for model, name in move_models:
+                if model in accepted_abstract_syntaxes:
+                    accepted_models.append((model, name))
+                    logger.info(f"  主机接受 C-MOVE 模型: {name}")
+
+            if not accepted_models:
+                error_msg = "主机未接受任何支持的 C-MOVE 模型"
+                logger.error(error_msg)
+                self.error.emit(error_msg)
+                assoc.release()
+                return
+
+            # 记录协商的传输语法
+            for ctx in assoc.accepted_contexts:
+                if hasattr(ctx, 'transfer_syntax') and ctx.transfer_syntax:
+                    ts_name = getattr(ctx.transfer_syntax, 'name', str(ctx.transfer_syntax))
+                    logger.info(f"  协商传输语法: {ts_name}")
+
             ds = Dataset()
             ds.QueryRetrieveLevel = "STUDY"
             ds.StudyInstanceUID = self.study_uid
+            if self.patient_id:
+                ds.PatientID = self.patient_id
 
             try:
-                # 先尝试 Study Root
-                logger.info("尝试 Study Root C-MOVE...")
-                completed, total, success, error_msg = self._execute_c_move(
-                    assoc, ds, StudyRootQueryRetrieveInformationModelMove
-                )
+                completed, total, success, error_msg = 0, 0, False, None
 
-                # Study Root 失败时回退到 Patient Root
-                if not success:
-                    logger.info("Study Root C-MOVE 失败，回退到 Patient Root...")
-                    completed, total, success, error_msg = self._execute_c_move(
-                        assoc, ds, PatientRootQueryRetrieveInformationModelMove
-                    )
+                # 按优先级尝试每个被接受的模型
+                for model, name in accepted_models:
+                    completed, total, success, error_msg = self._try_c_move(assoc, ds, model, name)
+                    if success and completed > 0:
+                        logger.info(f"{name} C-MOVE 成功，完成 {completed}/{total}")
+                        break
+                    elif success and completed == 0:
+                        # 成功但无数据传输，尝试下一个模型
+                        logger.info(f"{name} C-MOVE 成功但无数据传输，尝试下一个模型...")
+                        continue
+                    else:
+                        logger.warning(f"{name} C-MOVE 失败: {error_msg}，尝试下一个模型...")
+                        continue
 
                 if success:
                     self.finished.emit(completed, total)
                 else:
-                    self.error.emit(error_msg)
+                    self.error.emit(error_msg or "C-MOVE 所有模型均已尝试但未成功")
 
             finally:
                 if assoc.is_established:
@@ -788,6 +948,9 @@ class DicomNetworkManager(QObject):
         self.dsa_configs = dsa_configs or []
         self.signals = DicomNetworkSignals()
 
+        # C-FIND 结果缓存：study_uid -> patient_id（供 C-MOVE 使用）
+        self._study_patient_cache: Dict[str, str] = {}
+
         self._find_thread: Optional[QThread] = None
         self._find_worker: Optional[CFindWorker] = None
         self._store_thread: Optional[QThread] = None
@@ -804,6 +967,15 @@ class DicomNetworkManager(QObject):
         self._worklist_thread: Optional[QThread] = None
         self._worklist_worker: Optional[WorklistFindWorker] = None
 
+    def _update_study_cache(self, results: list):
+        """从 C-FIND 结果中提取 study_uid -> patient_id 映射并缓存。"""
+        for r in results:
+            study_uid = r.get("study_instance_uid", "")
+            patient_id = r.get("patient_id", "")
+            if study_uid and patient_id:
+                self._study_patient_cache[study_uid] = patient_id
+        logger.debug(f"Study 缓存已更新，当前 {len(self._study_patient_cache)} 条记录")
+
     # ---------- C-FIND 接口 ----------
 
     def find_studies(self, query_dict: Dict):
@@ -819,7 +991,8 @@ class DicomNetworkManager(QObject):
         self._find_worker = CFindWorker(self.pacs_config, query_dict)
         self._find_worker.moveToThread(self._find_thread)
 
-        # 信号转发
+        # 信号转发：先更新缓存，再转发到 UI
+        self._find_worker.finished.connect(self._update_study_cache)
         self._find_worker.finished.connect(self.signals.find_results_ready)
         self._find_worker.error.connect(self.signals.error_occurred)
 
@@ -1087,6 +1260,8 @@ class DicomNetworkManager(QObject):
         self._dsa_find_worker = CFindWorker(dsa_config, query_dict)
         self._dsa_find_worker.moveToThread(self._dsa_find_thread)
 
+        # 先更新缓存，再转发到 UI
+        self._dsa_find_worker.finished.connect(self._update_study_cache)
         self._dsa_find_worker.finished.connect(self.signals.dsa_find_results_ready)
         self._dsa_find_worker.error.connect(self.signals.error_occurred)
 
@@ -1155,8 +1330,11 @@ class DicomNetworkManager(QObject):
         dsa_config = self.dsa_configs[dsa_index]
         self._cleanup_dsa_move()
 
+        # 从缓存获取 PatientID（GE 等设备 C-MOVE 时需要）
+        patient_id = self._study_patient_cache.get(study_uid, "")
+
         self._dsa_move_thread = QThread(self)
-        self._dsa_move_worker = CMoveWorker(dsa_config, study_uid, move_dest_ae)
+        self._dsa_move_worker = CMoveWorker(dsa_config, study_uid, move_dest_ae, patient_id)
         self._dsa_move_worker.moveToThread(self._dsa_move_thread)
 
         self._dsa_move_worker.progress.connect(self.signals.dsa_move_progress)
@@ -1223,8 +1401,11 @@ class DicomNetworkManager(QObject):
             return
         self._cleanup_pacs_move()
 
+        # 从缓存获取 PatientID（GE 等设备 C-MOVE 时需要）
+        patient_id = self._study_patient_cache.get(study_uid, "")
+
         self._pacs_move_thread = QThread(self)
-        self._pacs_move_worker = CMoveWorker(self.pacs_config, study_uid, move_dest_ae)
+        self._pacs_move_worker = CMoveWorker(self.pacs_config, study_uid, move_dest_ae, patient_id)
         self._pacs_move_worker.moveToThread(self._pacs_move_thread)
 
         self._pacs_move_worker.progress.connect(self.signals.pacs_move_progress)

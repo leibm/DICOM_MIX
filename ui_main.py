@@ -1553,6 +1553,7 @@ class DsaQueryDialog(QDialog):
         self.setMinimumSize(800, 500)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
 
         # SCP 状态提示
         self.lbl_scp_status = QLabel()
@@ -1571,49 +1572,61 @@ class DsaQueryDialog(QDialog):
             )
         layout.addWidget(self.lbl_scp_status)
 
-        # 搜索条件行
-        search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("患者姓名:"))
+        # ── 查询条件分组 ──
+        group_search = QGroupBox("查询条件")
+        grid = QGridLayout(group_search)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+        grid.setColumnStretch(5, 1)
+        grid.setColumnStretch(7, 1)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+
+        # 第一行
+        grid.addWidget(QLabel("患者姓名:"), 0, 0)
         self.edit_find_name = QLineEdit()
         self.edit_find_name.setPlaceholderText("支持模糊查询")
-        search_layout.addWidget(self.edit_find_name)
+        grid.addWidget(self.edit_find_name, 0, 1)
 
-        search_layout.addWidget(QLabel("患者ID:"))
+        grid.addWidget(QLabel("患者 ID:"), 0, 2)
         self.edit_find_id = QLineEdit()
         self.edit_find_id.setPlaceholderText("Patient ID")
-        search_layout.addWidget(self.edit_find_id)
+        grid.addWidget(self.edit_find_id, 0, 3)
 
-        search_layout.addWidget(QLabel("检查号:"))
+        grid.addWidget(QLabel("检查号:"), 0, 4)
         self.edit_find_acc = QLineEdit()
         self.edit_find_acc.setPlaceholderText("Accession Number")
-        search_layout.addWidget(self.edit_find_acc)
-        layout.addLayout(search_layout)
+        grid.addWidget(self.edit_find_acc, 0, 5)
 
-        # 顶部：DSA 节点选择 + 日期筛选
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(QLabel("目标 DSA:"))
+        grid.addWidget(QLabel("日期:"), 0, 6)
+        self.combo_date_filter = QComboBox()
+        self.combo_date_filter.addItems(["今天", "最近3天", "最近7天", "最近30天", "全部"])
+        self.combo_date_filter.setCurrentIndex(0)
+        grid.addWidget(self.combo_date_filter, 0, 7)
+
+        layout.addWidget(group_search)
+
+        # ── DSA 节点 + 查询按钮行 ──
+        dsa_layout = QHBoxLayout()
+        dsa_layout.addWidget(QLabel("目标 DSA:"))
         self.combo_dsa = QComboBox()
-        self.combo_dsa.setMinimumWidth(200)
+        self.combo_dsa.setMinimumWidth(280)
         for idx, node in enumerate(self.dsa_nodes):
             display = f"{node.get('name', '未命名')} ({node.get('ae_title', '')}@{node.get('host', '')}:{node.get('port', '')})"
             self.combo_dsa.addItem(display, idx)
         if not self.dsa_nodes:
             self.combo_dsa.addItem("未配置 DSA 节点", -1)
             self.combo_dsa.setEnabled(False)
-        top_layout.addWidget(self.combo_dsa)
+        dsa_layout.addWidget(self.combo_dsa)
 
-        top_layout.addWidget(QLabel("日期:"))
-        self.combo_date_filter = QComboBox()
-        self.combo_date_filter.addItems(["今天", "最近3天", "最近7天", "最近30天", "全部"])
-        self.combo_date_filter.setCurrentIndex(0)
-        top_layout.addWidget(self.combo_date_filter)
-        top_layout.addStretch()
+        dsa_layout.addStretch()
 
         self.btn_find = QPushButton("查询 DSA")
         self.btn_find.setObjectName("success")
+        self.btn_find.setMinimumWidth(100)
         self.btn_find.clicked.connect(self._on_find)
-        top_layout.addWidget(self.btn_find)
-        layout.addLayout(top_layout)
+        dsa_layout.addWidget(self.btn_find)
+        layout.addLayout(dsa_layout)
 
         # 结果表格
         self.result_table = QTableView()
@@ -2035,7 +2048,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V4.1")
+        version = QLabel("版本 V4.3")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)

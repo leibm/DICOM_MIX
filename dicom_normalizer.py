@@ -14,7 +14,7 @@ import os
 import shutil
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import pydicom
 from pydicom import Dataset
@@ -154,11 +154,81 @@ class DICOMNormalizer:
     # 核心处理逻辑
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _expand_multiframe(ds: Dataset, file_path: str) -> List[Tuple[Dataset, str]]:
+        """
+        将多帧 DICOM 文件展开为多个单帧 Dataset 元组。
+
+        对于 CBCT/断层重建的多帧数据（单个 .dcm 包含 N 张切片），
+        需要将其展开为 N 个独立的单帧 Dataset，每个携带正确的 Z 轴坐标。
+
+        Returns
+        -------
+        List[Tuple[Dataset, str]] : 展开后的 (dataset, filepath) 列表。
+                                    单帧文件直接返回原样。
+        """
+        n_frames = int(getattr(ds, "NumberOfFrames", 1))
+        if n_frames <= 1:
+            return [(ds, file_path)]
+
+        # 基础 Z 坐标与层间距
+        base_ipp = list(ds.ImagePositionPatient) if "ImagePositionPatient" in ds else [0.0, 0.0, 0.0]
+        spacing = 1.0
+        if "SpacingBetweenSlices" in ds:
+            spacing = float(ds.SpacingBetweenSlices)
+        elif "SliceThickness" in ds:
+            spacing = float(ds.SliceThickness)
+
+        # 尝试从 PerFrameFunctionalGroupsSequence 读取每帧位置
+        per_frame_positions = []
+        pffgs = getattr(ds, "PerFrameFunctionalGroupsSequence", None)
+        if pffgs:
+            for item in pffgs:
+                if "PlanePositionSequence" in item:
+                    pps = item.PlanePositionSequence[0]
+                    if "ImagePositionPatient" in pps:
+                        per_frame_positions.append(list(pps.ImagePositionPatient))
+
+        results = []
+        for i in range(n_frames):
+            frame_ds = ds.copy()
+            frame_ds.NumberOfFrames = 1
+
+            # 计算该帧 Z 坐标
+            if i < len(per_frame_positions):
+                frame_ds.ImagePositionPatient = per_frame_positions[i]
+            else:
+                frame_ds.ImagePositionPatient = [
+                    base_ipp[0], base_ipp[1], base_ipp[2] + i * spacing
+                ]
+
+            # 标记来源，便于后续像素提取
+            frame_ds._multiframe_source_path = file_path
+            frame_ds._multiframe_frame_index = i
+            frame_ds._multiframe_total_frames = n_frames
+
+            # 移除仅适用于多帧的标签，避免单帧输出时造成解析问题
+            for tag_name in (
+                "PerFrameFunctionalGroupsSequence",
+                "SharedFunctionalGroupsSequence",
+                "FrameContentSequence",
+                "FrameAcquisitionSequence",
+                "DimensionOrganizationSequence",
+                "DimensionIndexSequence",
+            ):
+                if tag_name in frame_ds:
+                    delattr(frame_ds, tag_name)
+
+            results.append((frame_ds, file_path))
+
+        return results
+
     def _sort_and_validate_files(self, file_paths: List[str]) -> Tuple[List[Dataset], List[str]]:
         """
         步骤 1：从文件列表读取并排序校验。
 
         - 快速读取头信息（stop_before_pixels=True 加速）。
+        - 支持单文件多帧 DICOM 的自动展开。
         - 按 Z 轴坐标升序排列。
         - 校验是否属于同一 Study / Series，剔除异常文件。
 
@@ -177,8 +247,20 @@ class DICOMNormalizer:
             try:
                 # 首次读取仅用于排序和校验，跳过像素数据以提升速度
                 ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
+
+                # 多帧文件：允许没有顶层 ImagePositionPatient（位置在 PerFrameFunctionalGroupsSequence 中）
+                n_frames = int(getattr(ds, "NumberOfFrames", 1))
+                is_multiframe = n_frames > 1
+                has_perframe_position = False
+                if is_multiframe:
+                    pffgs = getattr(ds, "PerFrameFunctionalGroupsSequence", None)
+                    if pffgs and len(pffgs) > 0:
+                        first_item = pffgs[0]
+                        if "PlanePositionSequence" in first_item:
+                            has_perframe_position = True
+
                 # 校验必需标签
-                if "ImagePositionPatient" not in ds:
+                if "ImagePositionPatient" not in ds and not has_perframe_position:
                     if self.verbose:
                         print(f"  跳过（缺少 ImagePositionPatient）: {os.path.basename(fp)}")
                     continue
@@ -186,7 +268,10 @@ class DICOMNormalizer:
                     if self.verbose:
                         print(f"  跳过（缺少 SeriesInstanceUID）: {os.path.basename(fp)}")
                     continue
-                loaded.append((ds, fp))
+
+                # 展开多帧文件
+                expanded = self._expand_multiframe(ds, fp)
+                loaded.extend(expanded)
             except Exception as e:
                 if self.verbose:
                     print(f"  跳过（读取失败）: {os.path.basename(fp)} — {e}")
@@ -505,32 +590,86 @@ class DICOMNormalizer:
         # 统一使用 Explicit VR Little Endian 写入（最广泛的兼容性）
         target_ts = ExplicitVRLittleEndian
 
-        for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
-            # 重新完整读取原始文件以获取像素数据（之前的读取跳过了像素）
-            try:
-                full_ds = pydicom.dcmread(src_path, force=True)
-            except Exception as e:
-                if self.verbose:
-                    print(f"  警告：重新读取像素数据失败 {src_path}，跳过 — {e}")
-                continue
+        # 缓存多帧源文件的像素数据，避免重复读取
+        multiframe_cache: Dict[str, np.ndarray] = {}
 
-            # 将已处理的头信息（不含像素）合并到完整 Dataset
-            for tag in ds.keys():
-                full_ds[tag] = ds[tag]
+        for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
+            frame_idx = getattr(ds, "_multiframe_frame_index", None)
+
+            if frame_idx is not None:
+                # ---------- 多帧展开切片 ----------
+                orig_path = getattr(ds, "_multiframe_source_path", src_path)
+
+                # 从缓存或重新读取获取完整多帧像素数组
+                pixel_arr = multiframe_cache.get(orig_path)
+                if pixel_arr is None:
+                    try:
+                        full_ds = pydicom.dcmread(orig_path, force=True)
+                        pixel_arr = full_ds.pixel_array
+                        multiframe_cache[orig_path] = pixel_arr
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"  警告：读取多帧像素失败 {orig_path}，跳过 — {e}")
+                        continue
+
+                # 提取对应帧的 2D 像素数据
+                try:
+                    if pixel_arr.ndim == 3:          # (frames, h, w)
+                        frame_arr = pixel_arr[frame_idx]
+                    elif pixel_arr.ndim == 4:        # (frames, h, w, samples)
+                        frame_arr = pixel_arr[frame_idx]
+                    else:
+                        frame_arr = pixel_arr
+                except IndexError as e:
+                    if self.verbose:
+                        print(f"  警告：帧索引越界 {orig_path}[{frame_idx}] — {e}")
+                    continue
+
+                # ds 已是单帧副本（含处理后的头信息），只需注入像素数据
+                ds.PixelData = frame_arr.tobytes()
+                ds.Rows = frame_arr.shape[0]
+                ds.Columns = frame_arr.shape[1]
+
+                # 确保灰度相关标签正确（CT 通常为 1 sample）
+                if "SamplesPerPixel" not in ds:
+                    ds.SamplesPerPixel = 1
+                if "PhotometricInterpretation" not in ds:
+                    ds.PhotometricInterpretation = "MONOCHROME2"
+
+                # 清理残留的多帧标记（_expand_multiframe 已处理大部分，这里再做保险）
+                for tag_name in ("NumberOfFrames", "PerFrameFunctionalGroupsSequence",
+                                 "SharedFunctionalGroupsSequence"):
+                    if tag_name in ds:
+                        delattr(ds, tag_name)
+
+                output_ds = ds
+            else:
+                # ---------- 普通单帧文件 ----------
+                try:
+                    full_ds = pydicom.dcmread(src_path, force=True)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"  警告：重新读取像素数据失败 {src_path}，跳过 — {e}")
+                    continue
+
+                # 将已处理的头信息（不含像素）合并到完整 Dataset
+                for tag in ds.keys():
+                    full_ds[tag] = ds[tag]
+                output_ds = full_ds
 
             # 确保 file_meta 存在且 Transfer Syntax 已更新
-            if not hasattr(full_ds, "file_meta") or full_ds.file_meta is None:
-                full_ds.file_meta = Dataset()
-            full_ds.file_meta.MediaStorageSOPClassUID = self.CT_IMAGE_STORAGE_UID
-            full_ds.file_meta.MediaStorageSOPInstanceUID = full_ds.SOPInstanceUID
-            full_ds.file_meta.TransferSyntaxUID = target_ts
+            if not hasattr(output_ds, "file_meta") or output_ds.file_meta is None:
+                output_ds.file_meta = Dataset()
+            output_ds.file_meta.MediaStorageSOPClassUID = self.CT_IMAGE_STORAGE_UID
+            output_ds.file_meta.MediaStorageSOPInstanceUID = output_ds.SOPInstanceUID
+            output_ds.file_meta.TransferSyntaxUID = target_ts
 
             # 标准化文件命名
             filename = f"IM{idx + 1:04d}.dcm"
             out_path = os.path.join(output_dir, filename)
 
             try:
-                full_ds.save_as(out_path, write_like_original=False)
+                output_ds.save_as(out_path, write_like_original=False)
             except Exception as e:
                 if self.verbose:
                     print(f"  警告：保存失败 {filename} — {e}")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本（V4.2 版）
+PyInstaller 打包脚本（V4.3 版）
 
 用法: python build_exe.py
 """
@@ -279,7 +279,7 @@ def clean_dist_extras():
 def create_archive():
     """将输出目录压缩为 zip 文件。"""
     dist_dir = "dist/DICOM_MIX_Tools"
-    zip_path = "dist/DICOM_MIX_Tools_V4.2.zip"
+    zip_path = "dist/DICOM_MIX_Tools_V4.3.zip"
     if not os.path.isdir(dist_dir):
         print("未找到打包目录，跳过压缩")
         return
@@ -304,7 +304,7 @@ def copy_readme():
 
     readme = os.path.join(dist_dir, "README.txt")
     with open(readme, "w", encoding="utf-8") as f:
-        f.write("""DICOM MIX Tools v4.2
+        f.write("""DICOM MIX Tools v4.3
 ====================
 
 DICOM 医学影像综合处理平台
@@ -318,6 +318,8 @@ DICOM 医学影像综合处理平台
 6. 插件系统：3D 渲染（体渲染/MPR）、数据归一化
 7. 懒加载大体积断层数据，后台线程加载不卡顿
 8. 支持 Modality Worklist 查询（预约检查安排）
+9. 多厂商协议自适应（西门子/GE/飞利浦 C-FIND/C-MOVE 全兼容）
+10. 单文件多帧 CBCT 断层数据归一化
 
 依赖：
 - 本程序为 Windows 独立可执行文件，无需安装 Python
