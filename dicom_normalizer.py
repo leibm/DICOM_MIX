@@ -623,38 +623,82 @@ class DICOMNormalizer:
                 if hasattr(full_ds, "file_meta") and full_ds.file_meta is not None:
                     output_ds.file_meta = full_ds.file_meta.copy()
 
-                # 使用 pixel_array 提取指定帧（自动处理 JPEG/RLE 等压缩）
+                # 提取指定帧的像素数据
                 try:
-                    pixel_arr = full_ds.pixel_array
-                    if pixel_arr.ndim == 3:
-                        frame_arr = pixel_arr[frame_idx]
-                    elif pixel_arr.ndim == 4:
-                        frame_arr = pixel_arr[frame_idx]
+                    ts = getattr(getattr(full_ds, 'file_meta', None), 'TransferSyntaxUID', None)
+                    is_uncompressed = (
+                        ts in ('1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2')
+                        and isinstance(full_ds.PixelData, bytes)
+                    )
+
+                    if is_uncompressed:
+                        # 未压缩数据：直接按偏移量提取原始字节（避免 pixel_array 多帧解析异常）
+                        pixel_data = full_ds.PixelData
+                        bits = int(getattr(full_ds, 'BitsAllocated', 16))
+                        samples = int(getattr(full_ds, 'SamplesPerPixel', 1))
+                        rows = int(getattr(full_ds, 'Rows', 0))
+                        columns = int(getattr(full_ds, 'Columns', 0))
+                        total_frames = int(getattr(full_ds, 'NumberOfFrames', 1))
+
+                        if rows == 0 or columns == 0:
+                            raise ValueError("Rows 或 Columns 为 0")
+
+                        bytes_per_sample = bits // 8
+                        row_bytes = columns * samples * bytes_per_sample
+                        if row_bytes % 2 == 1:
+                            row_bytes += 1
+                        bytes_per_frame = row_bytes * rows
+
+                        expected_total = bytes_per_frame * total_frames
+                        if len(pixel_data) != expected_total:
+                            # 尝试无行填充的 layout
+                            bytes_per_frame_raw = columns * samples * bytes_per_sample * rows
+                            expected_total_raw = bytes_per_frame_raw * total_frames
+                            if len(pixel_data) == expected_total_raw:
+                                bytes_per_frame = bytes_per_frame_raw
+                            else:
+                                raise ValueError(
+                                    f"PixelData 长度不匹配: "
+                                    f"实际 {len(pixel_data)} != 期望 {expected_total} "
+                                    f"(frames={total_frames}, rows={rows}, cols={columns}, bits={bits})"
+                                )
+
+                        start = frame_idx * bytes_per_frame
+                        end = start + bytes_per_frame
+                        output_ds.PixelData = pixel_data[start:end]
                     else:
-                        frame_arr = pixel_arr
+                        # 压缩数据：使用 pixel_array 自动解压
+                        pixel_arr = full_ds.pixel_array
+                        if pixel_arr.ndim == 3:
+                            frame_arr = pixel_arr[frame_idx]
+                        elif pixel_arr.ndim == 4:
+                            frame_arr = pixel_arr[frame_idx]
+                        else:
+                            raise ValueError(f"pixel_array 维度异常: {pixel_arr.ndim}")
+
+                        # 保持原始 dtype
+                        if frame_arr.dtype == np.uint8:
+                            target_dtype = np.uint8
+                        elif frame_arr.dtype == np.int16:
+                            target_dtype = np.int16
+                        else:
+                            target_dtype = np.uint16
+
+                        if frame_arr.dtype != target_dtype:
+                            frame_arr = frame_arr.astype(target_dtype)
+
+                        if target_dtype in (np.uint16, np.int16) and frame_arr.dtype.byteorder == '>':
+                            frame_arr = frame_arr.byteswap().newbyteorder()
+
+                        output_ds.PixelData = frame_arr.tobytes()
+                        output_ds.Rows = frame_arr.shape[0]
+                        output_ds.Columns = frame_arr.shape[1]
+
                 except Exception as e:
                     if self.verbose:
-                        print(f"  警告：提取帧 {frame_idx} pixel_array 失败 — {e}")
+                        print(f"  警告：提取帧 {frame_idx} 像素数据失败 — {e}")
                     continue
 
-                # 保持原始 dtype，不做任何 rescale 转换
-                if frame_arr.dtype == np.uint8:
-                    target_dtype = np.uint8
-                elif frame_arr.dtype == np.int16:
-                    target_dtype = np.int16
-                else:
-                    target_dtype = np.uint16
-
-                if frame_arr.dtype != target_dtype:
-                    frame_arr = frame_arr.astype(target_dtype)
-
-                # 大端数据转小端（DICOM 标准以小端为主）
-                if target_dtype in (np.uint16, np.int16) and frame_arr.dtype.byteorder == '>':
-                    frame_arr = frame_arr.byteswap().newbyteorder()
-
-                output_ds.PixelData = frame_arr.tobytes()
-                output_ds.Rows = frame_arr.shape[0]
-                output_ds.Columns = frame_arr.shape[1]
                 output_ds.NumberOfFrames = 1
 
                 # 移除仅适用于多帧的标签
