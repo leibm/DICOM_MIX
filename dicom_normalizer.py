@@ -192,6 +192,12 @@ class DICOMNormalizer:
         results = []
         for i in range(n_frames):
             frame_ds = ds.copy()
+            # pydicom Dataset.copy() 不复制实例属性，必须手动复制
+            frame_ds.is_little_endian = getattr(ds, "is_little_endian", True)
+            frame_ds.is_implicit_VR = getattr(ds, "is_implicit_VR", False)
+            if hasattr(ds, "file_meta") and ds.file_meta is not None:
+                frame_ds.file_meta = ds.file_meta.copy()
+
             frame_ds.NumberOfFrames = 1
 
             # 计算该帧 Z 坐标
@@ -595,101 +601,92 @@ class DICOMNormalizer:
 
         for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
+            orig_path = getattr(ds, "_multiframe_source_path", src_path)
 
-            if frame_idx is not None:
-                # ---------- 多帧展开切片 ----------
-                orig_path = getattr(ds, "_multiframe_source_path", src_path)
-
-                # 从缓存或重新读取获取完整多帧原始 Dataset
+            # ---------- 读取完整原始文件获取像素 ----------
+            try:
                 full_ds = multiframe_cache.get(orig_path)
                 if full_ds is None:
-                    try:
-                        full_ds = pydicom.dcmread(orig_path, force=True)
-                        multiframe_cache[orig_path] = full_ds
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"  警告：重新读取原始文件失败 {orig_path}，跳过 — {e}")
-                        continue
+                    full_ds = pydicom.dcmread(orig_path, force=True)
+                    multiframe_cache[orig_path] = full_ds
+            except Exception as e:
+                if self.verbose:
+                    print(f"  警告：重新读取原始文件失败 {orig_path}，跳过 — {e}")
+                continue
 
-                # 从原始 PixelData 直接提取对应帧的字节（避免 pixel_array 的 rescale 转换）
-                try:
-                    orig_pixel_data = full_ds.PixelData
-                    bits_allocated = int(getattr(full_ds, 'BitsAllocated', 16))
-                    samples_per_pixel = int(getattr(full_ds, 'SamplesPerPixel', 1))
-                    rows = int(getattr(full_ds, 'Rows', 0))
-                    columns = int(getattr(full_ds, 'Columns', 0))
-                    total_frames = int(getattr(full_ds, 'NumberOfFrames', 1))
+            # 使用 pixel_array 自动处理压缩/解压
+            try:
+                pixel_arr = full_ds.pixel_array
+            except Exception as e:
+                if self.verbose:
+                    print(f"  警告：读取 pixel_array 失败 {orig_path} — {e}")
+                continue
 
-                    if rows == 0 or columns == 0:
-                        raise ValueError("Rows 或 Columns 为 0")
+            # 多帧：提取指定帧
+            if frame_idx is not None:
+                if pixel_arr.ndim == 3:
+                    pixel_arr = pixel_arr[frame_idx]
+                elif pixel_arr.ndim == 4:
+                    pixel_arr = pixel_arr[frame_idx]
 
-                    bytes_per_sample = bits_allocated // 8
-                    # DICOM 行填充：每行字节数必须为偶数
-                    row_bytes = columns * samples_per_pixel * bytes_per_sample
-                    if row_bytes % 2 == 1:
-                        row_bytes += 1
-                    bytes_per_frame = row_bytes * rows
+            # 逆 rescale 转换，恢复原始存储值
+            # pixel_array 默认已应用 modality LUT（RescaleSlope/Intercept）
+            slope = float(getattr(full_ds, 'RescaleSlope', 1))
+            intercept = float(getattr(full_ds, 'RescaleIntercept', 0))
+            if slope != 1 or intercept != 0:
+                raw_arr = (pixel_arr.astype(np.float64) - intercept) / slope
+                raw_arr = np.rint(raw_arr).astype(np.uint16)
+            else:
+                raw_arr = pixel_arr.astype(np.uint16)
 
-                    # 验证总字节数
-                    expected_total = bytes_per_frame * total_frames
-                    if len(orig_pixel_data) != expected_total:
-                        # 尝试不计算行填充（某些数据可能未填充）
-                        bytes_per_frame = columns * samples_per_pixel * bytes_per_sample * rows
-                        expected_total = bytes_per_frame * total_frames
-                        if len(orig_pixel_data) != expected_total:
-                            raise ValueError(
-                                f"PixelData 长度不匹配: "
-                                f"实际 {len(orig_pixel_data)} != 期望 {expected_total}"
-                            )
+            # 小端字节序（pydicom 默认小端）
+            if raw_arr.dtype.byteorder == '>':
+                raw_arr = raw_arr.byteswap().newbyteorder()
 
-                    start = frame_idx * bytes_per_frame
-                    end = start + bytes_per_frame
-                    frame_pixel_data = orig_pixel_data[start:end]
+            # 将像素数据注入已处理的头信息 Dataset
+            ds.PixelData = raw_arr.tobytes()
 
-                    # 注入原始像素字节
-                    ds.PixelData = frame_pixel_data
+            # 统一像素相关标签（与 uint16 MONOCHROME2 严格匹配）
+            ds.Rows = raw_arr.shape[0]
+            ds.Columns = raw_arr.shape[1]
+            ds.BitsAllocated = 16
+            ds.BitsStored = 16
+            ds.HighBit = 15
+            ds.PixelRepresentation = 0
+            ds.SamplesPerPixel = 1
+            ds.PhotometricInterpretation = "MONOCHROME2"
 
-                    # 保留原始像素相关标签（确保与 PixelData 字节格式严格匹配）
-                    for pixel_tag in (
-                        'BitsAllocated', 'BitsStored', 'HighBit', 'PixelRepresentation',
-                        'SamplesPerPixel', 'PhotometricInterpretation', 'Rows', 'Columns',
-                        'PlanarConfiguration',
-                    ):
-                        if pixel_tag in full_ds:
-                            setattr(ds, pixel_tag, getattr(full_ds, pixel_tag))
-
-                except Exception as e:
-                    if self.verbose:
-                        print(f"  警告：提取帧 {frame_idx} 像素数据失败 — {e}")
-                    continue
-
-                # 清理残留的多帧标记
+            # 清理多帧残留标签
+            if frame_idx is not None:
                 for tag_name in ("NumberOfFrames", "PerFrameFunctionalGroupsSequence",
                                  "SharedFunctionalGroupsSequence"):
                     if tag_name in ds:
                         delattr(ds, tag_name)
 
-                output_ds = ds
-            else:
-                # ---------- 普通单帧文件 ----------
-                try:
-                    full_ds = pydicom.dcmread(src_path, force=True)
-                except Exception as e:
-                    if self.verbose:
-                        print(f"  警告：重新读取像素数据失败 {src_path}，跳过 — {e}")
-                    continue
+            output_ds = ds
 
-                # 将已处理的头信息（不含像素）合并到完整 Dataset
-                for tag in ds.keys():
-                    full_ds[tag] = ds[tag]
-                output_ds = full_ds
+            # 统一设置编码属性（Explicit VR Little Endian）
+            output_ds.is_little_endian = True
+            output_ds.is_implicit_VR = False
 
-            # 确保 file_meta 存在且 Transfer Syntax 已更新
+            # 确保 file_meta 完整
             if not hasattr(output_ds, "file_meta") or output_ds.file_meta is None:
                 output_ds.file_meta = Dataset()
             output_ds.file_meta.MediaStorageSOPClassUID = self.CT_IMAGE_STORAGE_UID
             output_ds.file_meta.MediaStorageSOPInstanceUID = output_ds.SOPInstanceUID
             output_ds.file_meta.TransferSyntaxUID = target_ts
+            output_ds.file_meta.FileMetaInformationVersion = b'\x00\x01'
+            output_ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
+            output_ds.file_meta.ImplementationVersionName = pydicom.uid.PYDICOM_IMPLEMENTATION_NAME
+
+            # 添加 CT Image Storage IOD 必需/常用标签
+            if "Modality" not in output_ds:
+                output_ds.add_new(pydicom.tag.Tag(0x0008, 0x0060), "CS", "CT")
+            else:
+                output_ds.Modality = "CT"
+
+            if "ImageType" not in output_ds:
+                output_ds.add_new(pydicom.tag.Tag(0x0008, 0x0008), "CS", ["ORIGINAL", "PRIMARY", "AXIAL"])
 
             # 标准化文件命名
             filename = f"IM{idx + 1:04d}.dcm"
