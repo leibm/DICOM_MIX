@@ -189,6 +189,9 @@ class CFindWorker(QObject):
             ds.Modality = modality
 
         # 返回键：核心字段（必须为空字符串表示请求返回）
+        ds.PatientName = getattr(ds, "PatientName", "")
+        ds.PatientID = getattr(ds, "PatientID", "")
+        ds.AccessionNumber = getattr(ds, "AccessionNumber", "")
         ds.StudyInstanceUID = ""
         ds.StudyDate = getattr(ds, "StudyDate", "")  # 若上面已设日期范围则保留
         ds.StudyDescription = ""
@@ -326,7 +329,12 @@ class CFindWorker(QObject):
             # 记录协商的传输语法
             for ctx in assoc.accepted_contexts:
                 if hasattr(ctx, 'transfer_syntax') and ctx.transfer_syntax:
-                    logger.info(f"  协商传输语法: {ctx.transfer_syntax.name}")
+                    ts = ctx.transfer_syntax
+                    if isinstance(ts, list):
+                        for t in ts:
+                            logger.info(f"  协商传输语法: {t.name}")
+                    else:
+                        logger.info(f"  协商传输语法: {ts.name}")
 
             results = []
             last_error = None

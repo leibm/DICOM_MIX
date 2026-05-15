@@ -1,5 +1,23 @@
 # DICOM MIX Tools 更新日志
 
+## v4.4.0 (2026-05-15)
+
+### 问题修复
+- **修复 C-FIND 查询患者姓名不显示**：C-FIND 返回键缺少 PatientName / PatientID / AccessionNumber 字段，导致 PACS 不返回这些信息
+- **修复 pynetdicom 传输语法协商异常**：`transfer_syntax` 属性为列表类型时直接调用 `.name` 导致 `'list' object has no attribute 'name'` 错误
+- **修复 DSA 查询弹窗无法打开**：缺少 `QGridLayout` 导入导致 DsaQueryDialog 初始化崩溃
+
+### 改进优化
+- **CBCT Y 轴变化数据自动检测**：归一化时自动检测切片位置变化最大的轴（Y 轴），不再硬编码假设为 Z 轴
+- **归一化输出兼容 3D 重建**：
+  - Modality 设为 CT（原为 XA），兼容 RadiAnt / 3D Slicer
+  - 添加 FrameOfReferenceUID，确保 3D Slicer 可正确导入序列
+  - 添加 InstanceNumber，确保 RadiAnt 可正确排序
+  - RescaleIntercept 改为 0（原为 -1024），适配 8-bit XA 像素数据
+  - 自动推断 ImageOrientationPatient（从逐帧位置差分计算法向量）
+- **归一化进度条实时反馈**：归一化弹窗进度条实时显示处理百分比
+- **修复单帧输出私有标签残留**：改用 ds.copy() + 注入 PixelData 的方式，避免 full_ds 残留私有标签
+
 ## v4.3.0 (2026-05-14)
 
 ### 新增功能

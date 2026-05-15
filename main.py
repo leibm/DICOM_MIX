@@ -560,6 +560,7 @@ class NormalizerWorker(QObject):
     """在后台线程中执行 DICOM 异构数据归一化。"""
 
     progress = Signal(str)    # 进度消息（文本形式）
+    progress_pct = Signal(int)  # 数值进度（0-100）
     finished = Signal(dict)   # 完成时返回处理摘要
     error = Signal(str)       # 错误消息
 
@@ -569,16 +570,20 @@ class NormalizerWorker(QObject):
         self._output_dir = output_dir
         self._target = target
 
+    def _on_progress(self, message: str, pct: int):
+        self.progress.emit(message)
+        self.progress_pct.emit(pct)
+
     def run(self):
         try:
             normalizer = DICOMNormalizer(
                 target_manufacturer=self._target,
-                verbose=True,   # 临时开启详细日志以便排查多帧导出问题
+                verbose=True,
+                progress_callback=self._on_progress,
             )
-            # 手动发送进度消息（覆盖 normalizer 的 verbose 输出）
-            self.progress.emit("步骤 1/6: 读取并排序切片...")
             summary = normalizer.normalize_files(self._file_paths, self._output_dir)
-            self.progress.emit("步骤 6/6: 灰度映射标准化完成，正在保存...")
+            self.progress.emit("归一化完成")
+            self.progress_pct.emit(100)
             self.finished.emit(summary)
         except DicomNormalizeError as e:
             self.error.emit(str(e))
@@ -1179,6 +1184,7 @@ class ApplicationController(QObject):
         dialog = getattr(self.window, '_normalizer_dialog', None)
         if dialog:
             self._normalizer_worker.progress.connect(dialog.on_progress)
+            self._normalizer_worker.progress_pct.connect(dialog.on_progress_pct)
             self._normalizer_worker.finished.connect(dialog.on_finished)
             self._normalizer_worker.error.connect(dialog.on_error)
 

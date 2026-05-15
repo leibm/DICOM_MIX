@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QDockWidget, QSizePolicy, QScrollArea,
     QToolButton, QMenu, QComboBox, QDialog, QTextBrowser,
     QRadioButton, QTableWidget, QTableWidgetItem,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QGridLayout,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QAbstractItemModel, QModelIndex, QSortFilterProxyModel, QSettings, QTimer, QSize
 from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem, QFont, QPixmap, QIcon
@@ -983,12 +983,17 @@ class NormalizerDialog(QDialog):
 
         self.btn_start.setEnabled(False)
         self.btn_cancel.setEnabled(False)
+        self.progress_bar.setValue(0)
         self.lbl_status.setText("正在归一化...")
         self.request_normalize.emit(self._file_paths, output_dir, target)
 
     def on_progress(self, message: str):
-        """接收进度消息（文本形式，因为归一化步骤离散）"""
+        """接收进度消息（文本形式）"""
         self.lbl_status.setText(message)
+
+    def on_progress_pct(self, pct: int):
+        """接收数值进度（0-100）"""
+        self.progress_bar.setValue(min(pct, 100))
 
     def on_finished(self, summary: dict):
         slice_count = summary.get("slice_count", 0)
@@ -2057,20 +2062,35 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V4.3")
+        version = QLabel("版本 V4.4")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
 
         # 描述
         desc = QLabel(
-            "DSA 图像路由与编辑工具\n"
-            "用于 GE DSA 等血管造影设备的 DICOM 图像接收、查看、编辑和转发。"
+            "DICOM 医学影像综合处理平台\n"
+            "支持 DSA/CT/CBCT 图像接收、查看、归一化、转发与 3D 重建。"
         )
         desc.setStyleSheet("font-size: 13px; color: #374151; line-height: 1.6;")
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
         layout.addWidget(desc)
+
+        # 更新日志
+        changelog = QLabel(
+            "<b>V4.4 更新内容</b><br>"
+            "· 修复 C-FIND 查询患者姓名不显示的问题<br>"
+            "· 修复 pynetdicom 协商传输语法类型兼容<br>"
+            "· 归一化支持 CBCT Y 轴变化数据自动检测<br>"
+            "· 归一化输出兼容 RadiAnt / 3D Slicer 三维重建<br>"
+            "· 归一化进度条实时反馈<br>"
+            "· 修复 DSA 查询弹窗无法打开的问题"
+        )
+        changelog.setStyleSheet("font-size: 12px; color: #374151; line-height: 1.8; background-color: #f9fafb; padding: 10px 14px; border-radius: 8px;")
+        changelog.setAlignment(Qt.AlignLeft)
+        changelog.setWordWrap(True)
+        layout.addWidget(changelog)
 
         # 版权与开源协议
         license_text = QLabel(

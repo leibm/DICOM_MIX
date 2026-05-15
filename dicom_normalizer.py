@@ -47,6 +47,7 @@ class DICOMNormalizer:
     verbose : bool
         是否在控制台打印处理进度，默认 True。
     """
+    BUILD_ID = "V4.4-20260515-1"  # 每次更新代码时递增
 
     # 标准 CT Image Storage SOP Class UID
     CT_IMAGE_STORAGE_UID = "1.2.840.10008.5.1.4.1.1.2"
@@ -73,32 +74,102 @@ class DICOMNormalizer:
     # 标准横断面方向余弦（Axial）
     STANDARD_AXIAL_ORIENTATION = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 
-    def __init__(self, target_manufacturer: str = "GE", verbose: bool = True):
+    def __init__(self, target_manufacturer: str = "GE", verbose: bool = True,
+                 progress_callback=None):
         self.target = target_manufacturer.upper()
         self.verbose = verbose
+        self._progress_callback = progress_callback
         if self.target not in self.MANUFACTURER_PROFILES:
             raise ValueError(
                 f"不支持的厂商目标: {target_manufacturer}. "
                 f"当前支持: {list(self.MANUFACTURER_PROFILES.keys())}"
             )
 
+    def _report_progress(self, message: str, pct: int):
+        """向 UI 报告进度（百分比 0-100）。"""
+        if self._progress_callback:
+            self._progress_callback(message, pct)
+
     # ------------------------------------------------------------------
     # 内部工具方法
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_z_position(ds: Dataset) -> float:
+    def _detect_varying_axis(positions: List[list]) -> int:
         """
-        从 Image Position (Patient) (0020,0032) 提取 Z 轴坐标。
+        检测一组 ImagePositionPatient 中变化最大的轴。
+        返回轴索引: 0=X, 1=Y, 2=Z。
+        适用于 CBCT 旋转采集（变化轴可能不是 Z）。
+        """
+        if len(positions) < 2:
+            return 2  # 默认 Z
+        ranges = []
+        for axis in range(3):
+            vals = [float(p[axis]) for p in positions]
+            ranges.append(max(vals) - min(vals))
+        return ranges.index(max(ranges))
 
-        ImagePositionPatient 是一个包含 [x, y, z] 的列表，
-        对于标准横断面数据，z 值代表切片在患者坐标系中的纵向位置。
+    @staticmethod
+    def _get_sort_position(ds: Dataset, axis: int = 2) -> float:
+        """
+        从 ImagePositionPatient 提取指定轴的坐标用于排序。
         """
         if "ImagePositionPatient" not in ds:
             raise DicomNormalizeError("缺少必需标签 (0020,0032) ImagePositionPatient")
-        ipp = ds.ImagePositionPatient
-        # 确保是浮点数列表并取第三个值（z）
-        return float(ipp[2])
+        return float(ds.ImagePositionPatient[axis])
+
+    @staticmethod
+    def _read_raw_pixels_from_file(file_path: str, ds: Dataset, expected_bytes: int) -> Optional[bytes]:
+        """
+        当 pydicom 返回截断 PixelData 时，直接从原始文件读取像素字节。
+        多策略：file_tell → 标签搜索(LE/BE) → 文件末尾回退。
+        """
+        try:
+            with open(file_path, 'rb') as f:
+                data = f.read()
+        except Exception:
+            return None
+
+        file_size = len(data)
+        if file_size < expected_bytes:
+            return None
+
+        # 策略 1：通过 DataElement.file_tell 定位
+        try:
+            pixel_elem = ds['PixelData']
+            value_offset = getattr(pixel_elem, 'file_tell', None)
+            if value_offset is not None and value_offset + expected_bytes <= file_size:
+                return data[value_offset:value_offset + expected_bytes]
+        except Exception:
+            pass
+
+        # 策略 2：搜索 PixelData 标签 (7FE0,0010)，小端优先，大端备选
+        for tag_bytes in (b'\xe0\x7f\x10\x00', b'\x7f\xe0\x00\x10'):
+            # rfind 找最后一个出现（PixelData 通常在文件末尾附近）
+            pos = data.rfind(tag_bytes, 132)
+            if pos == -1:
+                continue
+
+            after_tag = pos + 4
+            vr = data[after_tag:after_tag + 2]
+            if vr in (b'OB', b'OW', b'UN'):
+                # Explicit VR: tag(4) + VR(2) + reserved(2) + length(4) = 12
+                length = int.from_bytes(data[after_tag + 4:after_tag + 8], 'little')
+                value_start = after_tag + 8
+            else:
+                # Implicit VR: tag(4) + length(4) = 8
+                length = int.from_bytes(data[after_tag:after_tag + 4], 'little')
+                value_start = after_tag + 4
+
+            if length == 0xFFFFFFFF:
+                # 未定义长度，读到文件末尾
+                length = file_size - value_start
+
+            if length >= expected_bytes and value_start + expected_bytes <= file_size:
+                return data[value_start:value_start + expected_bytes]
+
+        # 策略 3：文件末尾回退（PixelData 通常是文件最后一个元素）
+        return data[file_size - expected_bytes:]
 
     @staticmethod
     def _safe_remove_private_tags(ds: Dataset) -> int:
@@ -128,25 +199,29 @@ class DICOMNormalizer:
         return removed_count
 
     @staticmethod
-    def _compute_slice_spacing(sorted_datasets: List[Dataset]) -> float:
+    def _compute_slice_spacing(sorted_datasets: List[Dataset], axis: int = 2) -> float:
         """
-        基于已排序的切片列表计算相邻层之间的真实 Z 轴间距。
+        基于已排序的切片列表计算相邻层之间的真实间距。
 
         算法：
-        1. 提取每层的 Z 坐标。
-        2. 计算所有相邻层的差值（Delta Z）。
+        1. 提取每层在变化轴上的坐标。
+        2. 计算所有相邻层的差值。
         3. 取中位数作为最终间距（中位数对异常值更鲁棒）。
+
+        Parameters
+        ----------
+        axis : int
+            变化轴索引: 0=X, 1=Y, 2=Z（默认）。
 
         Returns
         -------
         float : 计算出的层间距，保留两位小数。
         """
         if len(sorted_datasets) < 2:
-            # 单张切片时无法计算层间距离，返回默认值 1.0
             return 1.0
 
-        z_positions = [DICOMNormalizer._get_z_position(ds) for ds in sorted_datasets]
-        deltas = [abs(z_positions[i] - z_positions[i - 1]) for i in range(1, len(z_positions))]
+        positions = [float(ds.ImagePositionPatient[axis]) for ds in sorted_datasets]
+        deltas = [abs(positions[i] - positions[i - 1]) for i in range(1, len(positions))]
         spacing = float(np.median(deltas))
         return round(spacing, 2)
 
@@ -171,12 +246,23 @@ class DICOMNormalizer:
         if n_frames <= 1:
             return [(ds, file_path)]
 
+        # 读取完整数据集（供校验及后续流水线复用，避免重复读取导致截断）
+        full_ds = None
+        expand_diag = {"path": file_path, "read_error": None, "pixel_len": 0, "pa_shape": None, "actual_frames": n_frames}
+        try:
+            # 尝试用显式文件对象读取，某些环境下比路径字符串更可靠
+            with open(file_path, 'rb') as f:
+                full_ds = pydicom.dcmread(f, force=True)
+        except Exception as e:
+            expand_diag["read_error"] = str(e)
+            print(f"[!] 警告: 读取 {os.path.basename(file_path)} 完整数据集失败 — {e}")
+
         # 校验实际 PixelData 能支持多少帧（防止 NumberOfFrames 虚标）
         actual_frames = n_frames
-        try:
-            full_ds = pydicom.dcmread(file_path, force=True)
-            if "PixelData" in full_ds:
+        if full_ds is not None and "PixelData" in full_ds:
+            try:
                 pixel_data_len = len(full_ds.PixelData)
+                expand_diag["pixel_len"] = pixel_data_len
                 rows = int(getattr(full_ds, 'Rows', 0))
                 cols = int(getattr(full_ds, 'Columns', 0))
                 bits = int(getattr(full_ds, 'BitsAllocated', 16))
@@ -191,6 +277,7 @@ class DICOMNormalizer:
                     # 也尝试用 pixel_array 形状确认
                     try:
                         pa = full_ds.pixel_array
+                        expand_diag["pa_shape"] = str(pa.shape)
                         if pa.ndim == 2:
                             actual_frames_from_array = 1
                         elif pa.ndim == 3:
@@ -199,21 +286,26 @@ class DICOMNormalizer:
                             actual_frames_from_array = pa.shape[0]
                         else:
                             actual_frames_from_array = n_frames
-                    except Exception:
+                    except Exception as pa_e:
+                        expand_diag["pa_shape"] = f"ERROR:{pa_e}"
                         actual_frames_from_array = n_frames
 
                     actual_frames = min(n_frames, actual_frames_from_size, actual_frames_from_array)
+                    expand_diag["actual_frames"] = actual_frames
                     if actual_frames < n_frames:
                         print(
                             f"[!] 警告: {os.path.basename(file_path)} 声称 {n_frames} 帧，"
                             f"但实际仅 {actual_frames} 帧有效 (PixelData {pixel_data_len} 字节，"
                             f"pixel_array {getattr(full_ds, 'pixel_array', 'N/A')})"
                         )
-        except Exception as e:
-            print(f"[!] 警告: 校验 {os.path.basename(file_path)} 实际帧数失败 — {e}")
+            except Exception as e:
+                expand_diag["read_error"] = str(e)
+                print(f"[!] 警告: 校验 {os.path.basename(file_path)} 实际帧数失败 — {e}")
 
         n_frames = actual_frames
         if n_frames <= 1:
+            if full_ds is not None:
+                return [(full_ds, file_path)]
             return [(ds, file_path)]
 
         # 基础 Z 坐标与层间距
@@ -234,6 +326,41 @@ class DICOMNormalizer:
                     if "ImagePositionPatient" in pps:
                         per_frame_positions.append(list(pps.ImagePositionPatient))
 
+        # 从 SharedFunctionalGroupsSequence 提取共享参数（在 strip 前）
+        shared_orientation = None
+        shared_pixel_spacing = None
+        sfgs = getattr(ds, "SharedFunctionalGroupsSequence", None)
+        if sfgs and len(sfgs) > 0:
+            sfg_item = sfgs[0]
+            if "PlaneOrientationSequence" in sfg_item:
+                po = sfg_item.PlaneOrientationSequence[0]
+                if "ImageOrientationPatient" in po:
+                    shared_orientation = list(po.ImageOrientationPatient)
+            if "PixelMeasuresSequence" in sfg_item:
+                pms = sfg_item.PixelMeasuresSequence[0]
+                if "PixelSpacing" in pms:
+                    shared_pixel_spacing = list(pms.PixelSpacing)
+
+        # 若无显式方向，根据实际帧位置推导方向余弦
+        # （CBCT 旋转采集时变化轴可能不是 Z，需要正确的方向以匹配法线方向）
+        if shared_orientation is None and len(per_frame_positions) >= 2:
+            p0 = np.array(per_frame_positions[0], dtype=float)
+            p1 = np.array(per_frame_positions[-1], dtype=float)
+            diff = p1 - p0
+            # 找到变化最大的轴作为切片法线方向
+            slice_normal_axis = int(np.argmax(np.abs(diff)))
+            # 法线方向单位向量
+            slice_normal = np.zeros(3)
+            slice_normal[slice_normal_axis] = 1.0
+            # 行方向：选择与法线垂直的轴
+            if slice_normal_axis == 0:
+                row_dir = np.array([0.0, 1.0, 0.0])
+            else:
+                row_dir = np.array([1.0, 0.0, 0.0])
+            # 列方向 = 法线 × 行方向（确保法线 = 行 × 列）
+            col_dir = np.cross(slice_normal, row_dir)
+            shared_orientation = list(row_dir) + list(col_dir)
+
         results = []
         for i in range(n_frames):
             frame_ds = ds.copy()
@@ -253,10 +380,20 @@ class DICOMNormalizer:
                     base_ipp[0], base_ipp[1], base_ipp[2] + i * spacing
                 ]
 
+            # 从 SharedFunctionalGroupsSequence 提取的参数写入顶层
+            if shared_orientation is not None:
+                frame_ds.ImageOrientationPatient = shared_orientation
+            if shared_pixel_spacing is not None and "PixelSpacing" not in frame_ds:
+                frame_ds.PixelSpacing = shared_pixel_spacing
+
             # 标记来源，便于后续像素提取
             frame_ds._multiframe_source_path = file_path
             frame_ds._multiframe_frame_index = i
             frame_ds._multiframe_total_frames = n_frames
+            frame_ds._multiframe_expand_diag = expand_diag
+            # 缓存完整数据集，避免 _run_pipeline 重复读取导致截断
+            if full_ds is not None:
+                frame_ds._multiframe_full_ds = full_ds
 
             # 移除仅适用于多帧的标签，避免单帧输出时造成解析问题
             for tag_name in (
@@ -352,18 +489,24 @@ class DICOMNormalizer:
                 f"保留 {len(filtered)} 个（Series UID: {dominant_series_uid[-12:]})"
             )
 
-        # 按 Z 轴坐标升序排序
-        filtered.sort(key=lambda item: self._get_z_position(item[0]))
+        # 检测实际变化轴（CBCT 旋转采集时变化轴可能不是 Z）
+        all_positions = [list(ds.ImagePositionPatient) for ds, _ in filtered]
+        self._sort_axis = self._detect_varying_axis(all_positions)
+        axis_names = {0: "X", 1: "Y", 2: "Z"}
+
+        # 按检测到的变化轴排序
+        filtered.sort(key=lambda item: self._get_sort_position(item[0], self._sort_axis))
 
         datasets = [ds for ds, _ in filtered]
         file_paths_sorted = [fp for _, fp in filtered]
 
         if self.verbose:
-            z_first = self._get_z_position(datasets[0])
-            z_last = self._get_z_position(datasets[-1])
+            pos_first = self._get_sort_position(datasets[0], self._sort_axis)
+            pos_last = self._get_sort_position(datasets[-1], self._sort_axis)
             print(
                 f"[步骤 1] 完成。共 {len(datasets)} 张切片，"
-                f"Z 范围: {z_first:.2f} ~ {z_last:.2f} mm"
+                f"变化轴: {axis_names[self._sort_axis]}，"
+                f"范围: {pos_first:.2f} ~ {pos_last:.2f} mm"
             )
 
         return datasets, file_paths_sorted
@@ -412,10 +555,14 @@ class DICOMNormalizer:
         # 取第一张切片的 StudyInstanceUID 作为基准（全部应一致）
         study_uid = datasets[0].StudyInstanceUID
         new_series_uid = generate_uid()
+        # 3D Slicer 强制要求同一容积的所有切片共享 FrameOfReferenceUID
+        new_frame_of_reference_uid = generate_uid()
 
         for idx, ds in enumerate(datasets):
             # 强制降级为 CT Image Storage
             ds.SOPClassUID = self.CT_IMAGE_STORAGE_UID
+            # Modality 必须与 SOP Class 一致，否则 3D Slicer 等严格软件拒绝导入
+            ds.Modality = "CT"
 
             # 为每张切片生成新的 SOP Instance UID
             ds.SOPInstanceUID = generate_uid()
@@ -425,6 +572,11 @@ class DICOMNormalizer:
 
             # 保留 StudyInstanceUID（必须保持不变以维持 Study 层级关系）
             ds.StudyInstanceUID = study_uid
+
+            # 3D Slicer 强制校验：同一容积切片必须共享 FrameOfReferenceUID
+            ds.FrameOfReferenceUID = new_frame_of_reference_uid
+            # RadiAnt 依赖 InstanceNumber 排序切片
+            ds.InstanceNumber = str(idx + 1)
 
             # 同步更新 Media Storage SOP Class / Instance UID（文件元信息层级）
             if hasattr(ds, "file_meta") and ds.file_meta is not None:
@@ -479,21 +631,19 @@ class DICOMNormalizer:
         if self.verbose:
             print("[步骤 4] 开始空间几何参数重构...")
 
-        # 强制设定为标准横断面方向（Axial）
-        # Image Orientation (Patient) (0020,0037) 为 6 个浮点数的方向余弦
-        orientation = self.STANDARD_AXIAL_ORIENTATION
+        # 方向余弦：保留原始方向（从 SharedFunctionalGroupsSequence 提取），
+        # 仅在缺失时补充标准横断面方向
         for ds in datasets:
-            if "ImageOrientationPatient" in ds:
-                ds.ImageOrientationPatient = orientation
-            else:
+            if "ImageOrientationPatient" not in ds:
                 ds.add_new(
                     pydicom.tag.Tag(0x0020, 0x0037),
                     "DS",
-                    orientation,
+                    self.STANDARD_AXIAL_ORIENTATION,
                 )
 
-        # 计算真实的层间距离（基于 ImagePositionPatient 的 Z 坐标差值）
-        slice_spacing = self._compute_slice_spacing(datasets)
+        # 使用检测到的变化轴计算层间距
+        sort_axis = getattr(self, '_sort_axis', 2)
+        slice_spacing = self._compute_slice_spacing(datasets, axis=sort_axis)
 
         # 将计算出的间距同时写入 Slice Thickness 和 Spacing Between Slices
         # 某些工作站（如 GE AW）会同时校验这两个标签
@@ -524,6 +674,9 @@ class DICOMNormalizer:
             if "PixelSpacing" not in ds and "ImagerPixelSpacing" in ds:
                 # 某些 XA/DSA 数据使用 ImagerPixelSpacing，需要迁移
                 ds.PixelSpacing = ds.ImagerPixelSpacing
+            elif "PixelSpacing" not in ds:
+                # 两者都不存在时，注入默认像素尺寸以确保 3D 引擎能构建等距体素
+                ds.add_new(pydicom.tag.Tag(0x0028, 0x0030), "DS", ["1.0", "1.0"])
 
         if self.verbose:
             print(f"[步骤 4] 完成。层间距 = {slice_spacing:.2f} mm，方向 = Axial")
@@ -562,11 +715,13 @@ class DICOMNormalizer:
 
         for ds in datasets:
             # Rescale Intercept (0028,1052)
+            # 仅在原始数据已有 RescaleIntercept 时保留，否则设为 0
+            # （对 8-bit XA 数据注入 -1024 无意义且会导致值域错误）
             if "RescaleIntercept" not in ds:
                 ds.add_new(
                     pydicom.tag.Tag(0x0028, 0x1052),
                     "DS",
-                    "-1024",
+                    "0",
                 )
 
             # Rescale Slope (0028,1053)
@@ -577,7 +732,7 @@ class DICOMNormalizer:
                     "1",
                 )
 
-            # 同步更新 Rescale Type，确保工作站识别为 HU 单位
+            # 同步更新 Rescale Type
             if "RescaleType" not in ds:
                 ds.add_new(
                     pydicom.tag.Tag(0x0028, 0x1054),
@@ -615,20 +770,26 @@ class DICOMNormalizer:
         dict : 处理摘要。
         """
         output_dir = os.path.abspath(output_dir)
+        total_steps = 6  # 步骤 2-6 + 保存
 
         # 步骤 2：UID 重置与 IOD 降级
+        self._report_progress("步骤 2/6: UID 重置与 IOD 降级...", 10)
         study_uid, new_series_uid = self._reset_uids_and_downgrade(datasets)
 
         # 步骤 3：厂商伪装
+        self._report_progress("步骤 3/6: 厂商身份伪装...", 25)
         self._spoof_manufacturer(datasets)
 
         # 步骤 4：空间几何重构
+        self._report_progress("步骤 4/6: 空间几何参数重构...", 40)
         self._reconstruct_spatial_geometry(datasets)
 
         # 步骤 5：私有标签清洗
+        self._report_progress("步骤 5/6: 私有标签清洗...", 55)
         self._scrub_private_tags(datasets)
 
         # 步骤 6：灰度映射标准化
+        self._report_progress("步骤 6/6: 灰度映射标准化...", 70)
         self._normalize_rescale(datasets)
 
         # ------------------------------------------------------------------
@@ -643,6 +804,8 @@ class DICOMNormalizer:
 
         # 缓存多帧源文件的完整 Dataset，避免重复读取
         multiframe_cache: Dict[str, Dataset] = {}
+        # 缓存从文件直接读取的原始像素字节（避免每次帧提取都重读 115MB 文件）
+        raw_pixel_cache: Dict[str, bytes] = {}
 
         saved_count = 0
         failed_frames: List[Tuple[int, str, str]] = []
@@ -651,27 +814,49 @@ class DICOMNormalizer:
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
             orig_path = getattr(ds, "_multiframe_source_path", src_path)
 
-            # 读取完整原始文件
-            try:
-                full_ds = multiframe_cache.get(orig_path)
-                if full_ds is None:
-                    full_ds = pydicom.dcmread(orig_path, force=True)
-                    multiframe_cache[orig_path] = full_ds
-            except Exception as e:
-                err_msg = f"重新读取原始文件失败: {e}"
-                failed_frames.append((idx, os.path.basename(orig_path), err_msg))
-                if self.verbose:
-                    print(f"  警告：{err_msg}")
-                continue
+            # 读取完整原始文件（优先使用 _expand_multiframe 缓存的 full_ds，避免重复读取截断）
+            full_ds = getattr(ds, "_multiframe_full_ds", None)
+            if full_ds is None:
+                try:
+                    full_ds = multiframe_cache.get(orig_path)
+                    if full_ds is None:
+                        full_ds = pydicom.dcmread(orig_path, force=True)
+                        multiframe_cache[orig_path] = full_ds
+                except Exception as e:
+                    err_msg = f"重新读取原始文件失败: {e}"
+                    failed_frames.append((idx, os.path.basename(orig_path), err_msg))
+                    if self.verbose:
+                        print(f"  警告：{err_msg}")
+                    continue
 
             if frame_idx is not None:
                 # ---------- 多帧展开切片 ----------
+                # 诊断：仅对每文件的首帧输出像素数据读取详情
+                if frame_idx == 0 and self.verbose:
+                    px_len = len(full_ds.PixelData) if 'PixelData' in full_ds else 0
+                    try:
+                        pa_shape = full_ds.pixel_array.shape
+                    except Exception as pa_e:
+                        pa_shape = f"ERROR: {pa_e}"
+                    ts = getattr(getattr(full_ds, 'file_meta', None), 'TransferSyntaxUID', 'N/A')
+                    print(f"  [诊断] 多帧源 {os.path.basename(orig_path)}: "
+                          f"PixelData={px_len} bytes, pixel_array={pa_shape}, TS={ts}")
+
                 # 复制完整原始 Dataset，避免修改缓存中的 multi-frame 源
                 output_ds = full_ds.copy()
                 output_ds.is_little_endian = getattr(full_ds, "is_little_endian", True)
                 output_ds.is_implicit_VR = getattr(full_ds, "is_implicit_VR", False)
                 if hasattr(full_ds, "file_meta") and full_ds.file_meta is not None:
                     output_ds.file_meta = full_ds.file_meta.copy()
+
+                # 恢复 _expand_multiframe 设置的每帧空间坐标
+                # （full_ds.copy() 会覆盖为原始多帧文件的顶层值，对多帧文件通常不正确）
+                if hasattr(ds, 'ImagePositionPatient'):
+                    output_ds.ImagePositionPatient = ds.ImagePositionPatient
+                if hasattr(ds, 'ImageOrientationPatient'):
+                    output_ds.ImageOrientationPatient = ds.ImageOrientationPatient
+                # 单帧输出
+                output_ds.NumberOfFrames = 1
 
                 # 提取指定帧的像素数据
                 pixel_extracted = False
@@ -685,12 +870,13 @@ class DICOMNormalizer:
 
                     if is_uncompressed:
                         # 未压缩数据：直接按偏移量提取原始字节（避免 pixel_array 多帧解析异常）
-                        pixel_data = full_ds.PixelData
                         bits = int(getattr(full_ds, 'BitsAllocated', 16))
                         samples = int(getattr(full_ds, 'SamplesPerPixel', 1))
                         rows = int(getattr(full_ds, 'Rows', 0))
                         columns = int(getattr(full_ds, 'Columns', 0))
-                        total_frames = int(getattr(full_ds, 'NumberOfFrames', 1))
+                        # 优先使用展开阶段记录的帧数（pydicom 重读可能返回错误值）
+                        total_frames = int(getattr(ds, '_multiframe_total_frames',
+                                                   getattr(full_ds, 'NumberOfFrames', 1)))
 
                         if rows == 0 or columns == 0:
                             extraction_log.append(f"uncompressed: Rows={rows}, Columns={columns} 无效")
@@ -700,39 +886,38 @@ class DICOMNormalizer:
                             if row_bytes % 2 == 1:
                                 row_bytes += 1
                             bytes_per_frame = row_bytes * rows
-
                             expected_total = bytes_per_frame * total_frames
-                            actual_len = len(pixel_data)
 
-                            # 更宽松的长度匹配：允许尾部有少量填充字节
-                            if actual_len == expected_total:
-                                pass
+                            # 优先使用原始文件缓存（绕过 pydicom 截断的 PixelData）
+                            cached_raw = raw_pixel_cache.get(orig_path)
+                            if cached_raw is not None and len(cached_raw) >= expected_total:
+                                pixel_data = cached_raw
                             else:
-                                # 尝试无行填充的 layout
-                                bytes_per_frame_raw = columns * samples * bytes_per_sample * rows
-                                expected_total_raw = bytes_per_frame_raw * total_frames
-                                if actual_len == expected_total_raw:
-                                    bytes_per_frame = bytes_per_frame_raw
-                                elif actual_len >= expected_total and actual_len <= expected_total + total_frames * 2:
-                                    pass
-                                elif actual_len >= expected_total_raw and actual_len <= expected_total_raw + total_frames * 2:
-                                    bytes_per_frame = bytes_per_frame_raw
-                                else:
-                                    extraction_log.append(
-                                        f"uncompressed: 长度不匹配 "
-                                        f"(实际 {actual_len} != 期望 {expected_total}, "
-                                        f"frames={total_frames}, rows={rows}, cols={columns}, bits={bits})"
+                                pixel_data = full_ds.PixelData
+                                actual_len = len(pixel_data)
+                                # 若 pydicom 返回的数据不足期望值，从文件直接读取
+                                if actual_len < expected_total:
+                                    raw_pixels = self._read_raw_pixels_from_file(
+                                        orig_path, full_ds, expected_total
                                     )
-                                    bytes_per_frame = 0
+                                    if raw_pixels is not None and len(raw_pixels) >= expected_total:
+                                        raw_pixel_cache[orig_path] = raw_pixels
+                                        pixel_data = raw_pixels
+                                    else:
+                                        extraction_log.append(
+                                            f"uncompressed: 截断 {actual_len}B != 期望 {expected_total}B，"
+                                            f"raw_fallback={'成功' if raw_pixels else '失败'}"
+                                        )
+                                        bytes_per_frame = 0
 
                             if bytes_per_frame > 0:
                                 start = frame_idx * bytes_per_frame
                                 end = start + bytes_per_frame
-                                if end <= actual_len:
+                                if end <= len(pixel_data):
                                     output_ds.PixelData = pixel_data[start:end]
                                     pixel_extracted = True
                                 else:
-                                    extraction_log.append(f"uncompressed: 帧 {frame_idx} 越界 ({end} > {actual_len})")
+                                    extraction_log.append(f"uncompressed: 帧 {frame_idx} 越界 ({end} > {len(pixel_data)})")
 
                     if not pixel_extracted:
                         # 压缩数据 或 未压缩回退：使用 pixel_array 自动解压
@@ -812,11 +997,15 @@ class DICOMNormalizer:
                     output_ds[tag] = ds[tag]
 
             else:
-                # ---------- 普通单帧文件：沿用 V4.0 方案 ----------
-                # 直接复用原始完整 Dataset，合并已处理头信息，保留原始像素数据
-                output_ds = full_ds
-                for tag in ds.keys():
-                    output_ds[tag] = ds[tag]
+                # ---------- 普通单帧文件 ----------
+                # 拷贝已清洗干净的头部（私有标签已在步骤 5 被删除），
+                # 再注入原始像素数据，避免 full_ds 中残留的私有标签被保留
+                output_ds = ds.copy()
+                output_ds.is_little_endian = getattr(ds, "is_little_endian", True)
+                output_ds.is_implicit_VR = getattr(ds, "is_implicit_VR", False)
+                if hasattr(ds, "file_meta") and ds.file_meta is not None:
+                    output_ds.file_meta = ds.file_meta.copy()
+                output_ds.PixelData = full_ds.PixelData
 
             # 确保 file_meta 存在且 Transfer Syntax 已更新
             if not hasattr(output_ds, "file_meta") or output_ds.file_meta is None:
@@ -832,6 +1021,11 @@ class DICOMNormalizer:
             try:
                 output_ds.save_as(out_path, write_like_original=False)
                 saved_count += 1
+                # 保存进度：75% ~ 99%
+                save_pct = 75 + int(24 * (idx + 1) / len(datasets))
+                self._report_progress(
+                    f"正在保存切片 {idx + 1}/{len(datasets)}...", save_pct
+                )
             except Exception as e:
                 failed_frames.append((frame_idx if frame_idx is not None else idx, os.path.basename(orig_path), f"保存失败: {e}"))
                 if self.verbose:
@@ -848,7 +1042,14 @@ class DICOMNormalizer:
             for err, count in list(unique_errors.items())[:5]:
                 print(f"    ({count} 次) {err}")
 
-        slice_spacing = self._compute_slice_spacing(datasets)
+        slice_spacing = self._compute_slice_spacing(datasets, axis=getattr(self, '_sort_axis', 2))
+
+        # 收集多帧展开阶段的诊断信息（用于排查 EXE 截断问题）
+        expand_diags = []
+        for ds in datasets:
+            diag = getattr(ds, "_multiframe_expand_diag", None)
+            if diag is not None and diag not in expand_diags:
+                expand_diags.append(diag)
 
         summary = {
             "input_dir": source_label,
@@ -862,6 +1063,7 @@ class DICOMNormalizer:
             "slice_spacing_mm": slice_spacing,
             "target_manufacturer": self.target,
             "status": "success" if saved_count == len(datasets) else "partial",
+            "expand_diags": expand_diags,
         }
 
         if self.verbose or failed_frames:
@@ -872,6 +1074,10 @@ class DICOMNormalizer:
             if failed_frames:
                 print(f"  处理失败:   {len(failed_frames)}")
             print(f"  层间距:     {summary['slice_spacing_mm']:.2f} mm")
+            if expand_diags:
+                for d in expand_diags:
+                    print(f"  [展开诊断] PixelData={d.get('pixel_len')} pa={d.get('pa_shape')} "
+                          f"actual={d.get('actual_frames')} err={d.get('read_error')}")
             print(f"  Study UID:  ...{study_uid[-12:]}")
             print(f"  Series UID: ...{new_series_uid[-12:]}")
             print(f"  输出目录:   {output_dir}")
@@ -900,6 +1106,7 @@ class DICOMNormalizer:
         if self.verbose:
             print(f"\n{'=' * 60}")
             print(f"DICOM 异构断层数据归一化开始")
+            print(f"版本: {self.BUILD_ID}")
             print(f"输入: {input_dir}")
             print(f"输出: {output_dir}")
             print(f"目标厂商: {self.target}")
@@ -936,6 +1143,7 @@ class DICOMNormalizer:
             print(f"{'=' * 60}\n")
 
         # 步骤 1：排序与校验
+        self._report_progress("步骤 1/6: 读取并排序切片...", 0)
         datasets, sorted_paths = self._sort_and_validate_files(file_paths)
 
         return self._run_pipeline(datasets, sorted_paths, output_dir,

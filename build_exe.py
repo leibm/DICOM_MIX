@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本（V4.3 版）
+PyInstaller 打包脚本（V4.4 版）
 
 用法: python build_exe.py
 """
@@ -67,6 +67,13 @@ EXCLUDE_MODULES = [
 def clean():
     """清理之前的构建产物。"""
     import time
+
+    # 强制终止可能占用 dist/ 的旧进程
+    print("检查并终止旧进程...")
+    subprocess.run(["taskkill", "/F", "/IM", "DICOM_MIX_Tools.exe"],
+                   capture_output=True)
+    time.sleep(1)
+
     for d in ["build", "dist"]:
         if os.path.isdir(d):
             for attempt in range(3):
@@ -279,7 +286,7 @@ def clean_dist_extras():
 def create_archive():
     """将输出目录压缩为 zip 文件。"""
     dist_dir = "dist/DICOM_MIX_Tools"
-    zip_path = "dist/DICOM_MIX_Tools_V4.3.zip"
+    zip_path = "dist/DICOM_MIX_Tools_V4.4.zip"
     if not os.path.isdir(dist_dir):
         print("未找到打包目录，跳过压缩")
         return
@@ -304,7 +311,7 @@ def copy_readme():
 
     readme = os.path.join(dist_dir, "README.txt")
     with open(readme, "w", encoding="utf-8") as f:
-        f.write("""DICOM MIX Tools v4.3
+        f.write("""DICOM MIX Tools v4.4
 ====================
 
 DICOM 医学影像综合处理平台
@@ -320,6 +327,14 @@ DICOM 医学影像综合处理平台
 8. 支持 Modality Worklist 查询（预约检查安排）
 9. 多厂商协议自适应（西门子/GE/飞利浦 C-FIND/C-MOVE 全兼容）
 10. 单文件多帧 CBCT 断层数据归一化
+
+V4.4 更新内容：
+- 修复 C-FIND 查询 PatientName 不显示的问题
+- 修复 pynetdicom transfer_syntax 列表类型兼容
+- 归一化支持 CBCT Y 轴变化数据的自动检测
+- 归一化输出文件支持 RadiAnt / 3D Slicer 三维重建
+- 归一化进度条实时反馈
+- 修复 DSA 查询弹窗无法打开的问题
 
 依赖：
 - 本程序为 Windows 独立可执行文件，无需安装 Python
