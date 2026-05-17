@@ -2062,7 +2062,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("版本 V4.4")
+        version = QLabel("版本 V4.4.5")
         version.setStyleSheet("font-size: 14px; color: #6b7280;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -2079,6 +2079,11 @@ class AboutDialog(QDialog):
 
         # 更新日志
         changelog = QLabel(
+            "<b>V4.4.5 更新内容</b><br>"
+            "· 修复多帧 CBCT 归一化后所有图像相同的问题<br>"
+            "· 修复 PixelData VR 歧义导致保存失败或损坏<br>"
+            "· 修复 GE 工作站归一化后图像二值化/窗宽异常<br>"
+            "· 动态窗宽窗位计算（基于像素数据 2-98% 百分位）<br><br>"
             "<b>V4.4 更新内容</b><br>"
             "· 修复 C-FIND 查询患者姓名不显示的问题<br>"
             "· 修复 pynetdicom 协商传输语法类型兼容<br>"

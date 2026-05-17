@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PyInstaller 打包脚本（V4.4 版）
+PyInstaller 打包脚本（V4.4.5 版）
 
 用法: python build_exe.py
 """
@@ -286,7 +286,7 @@ def clean_dist_extras():
 def create_archive():
     """将输出目录压缩为 zip 文件。"""
     dist_dir = "dist/DICOM_MIX_Tools"
-    zip_path = "dist/DICOM_MIX_Tools_V4.4.zip"
+    zip_path = "dist/DICOM_MIX_Tools_V4.4.5.zip"
     if not os.path.isdir(dist_dir):
         print("未找到打包目录，跳过压缩")
         return
@@ -311,7 +311,7 @@ def copy_readme():
 
     readme = os.path.join(dist_dir, "README.txt")
     with open(readme, "w", encoding="utf-8") as f:
-        f.write("""DICOM MIX Tools v4.4
+        f.write("""DICOM MIX Tools v4.4.5
 ====================
 
 DICOM 医学影像综合处理平台
@@ -327,6 +327,12 @@ DICOM 医学影像综合处理平台
 8. 支持 Modality Worklist 查询（预约检查安排）
 9. 多厂商协议自适应（西门子/GE/飞利浦 C-FIND/C-MOVE 全兼容）
 10. 单文件多帧 CBCT 断层数据归一化
+
+V4.4.5 更新内容：
+- 修复多帧 CBCT 归一化后所有输出图像相同的问题
+- 修复 PixelData VR 歧义导致保存失败或数据损坏
+- 修复 GE 工作站归一化后图像二值化/窗宽异常
+- 动态窗宽窗位计算（基于像素数据 2-98% 百分位）
 
 V4.4 更新内容：
 - 修复 C-FIND 查询 PatientName 不显示的问题

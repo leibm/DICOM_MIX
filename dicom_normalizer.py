@@ -47,7 +47,7 @@ class DICOMNormalizer:
     verbose : bool
         是否在控制台打印处理进度，默认 True。
     """
-    BUILD_ID = "V4.4-20260515-1"  # 每次更新代码时递增
+    BUILD_ID = "V4.4.5-20260517-1"  # 每次更新代码时递增
 
     # 标准 CT Image Storage SOP Class UID
     CT_IMAGE_STORAGE_UID = "1.2.840.10008.5.1.4.1.1.2"
@@ -709,14 +709,29 @@ class DICOMNormalizer:
 
         检查 Rescale Intercept / Slope，若不存在则注入默认值，
         以满足工作站对 HU 值校验的强制要求（特别是对于 DSA 重建的类 CT 数据）。
+
+        对 8-bit 数据（如 XA/CBCT）自动升级为 16-bit 元数据，
+        并设置 WindowCenter/WindowWidth 确保工作站正确显示。
         """
         if self.verbose:
             print("[步骤 6] 开始灰度映射标准化...")
 
+        is_8bit = False
+        if datasets:
+            bits = int(getattr(datasets[0], 'BitsAllocated', 16))
+            is_8bit = (bits == 8)
+            if is_8bit and self.verbose:
+                print("[步骤 6] 检测到 8-bit 数据，将升级为 16-bit 并设置窗宽窗位")
+
         for ds in datasets:
+            # 8-bit 数据升级为 16-bit 元数据（像素数据在 _run_pipeline 中已缩放）
+            if is_8bit:
+                ds.BitsAllocated = 16
+                ds.BitsStored = 16
+                ds.HighBit = 15
+                ds.PixelRepresentation = 0  # unsigned
+
             # Rescale Intercept (0028,1052)
-            # 仅在原始数据已有 RescaleIntercept 时保留，否则设为 0
-            # （对 8-bit XA 数据注入 -1024 无意义且会导致值域错误）
             if "RescaleIntercept" not in ds:
                 ds.add_new(
                     pydicom.tag.Tag(0x0028, 0x1052),
@@ -742,8 +757,20 @@ class DICOMNormalizer:
             else:
                 ds.RescaleType = "HU"
 
+            # 设置窗宽窗位占位值（确保标签存在）
+            # 实际数值将在 _run_pipeline 中根据像素数据动态计算后覆盖
+            bits = int(getattr(ds, 'BitsAllocated', 16))
+            if is_8bit or bits == 16:
+                pr = int(getattr(ds, 'PixelRepresentation', 0))
+                if pr == 1:  # signed
+                    ds.WindowCenter = "0"
+                    ds.WindowWidth = "65535"
+                else:  # unsigned
+                    ds.WindowCenter = "32768"
+                    ds.WindowWidth = "65535"
+
         if self.verbose:
-            print("[步骤 6] 完成。Rescale Intercept = -1024, Slope = 1, Type = HU")
+            print("[步骤 6] 完成。Rescale Intercept = 0, Slope = 1, Type = HU")
 
     # ------------------------------------------------------------------
     # 公共 API
@@ -809,6 +836,11 @@ class DICOMNormalizer:
 
         saved_count = 0
         failed_frames: List[Tuple[int, str, str]] = []
+        # 收集输出数据集，用于在保存前统一计算窗宽窗位
+        output_frames: List[Dataset] = []
+        # 像素值统计（用于计算窗宽窗位）
+        pixel_stat_min = float('inf')
+        pixel_stat_max = float('-inf')
 
         for idx, (ds, src_path) in enumerate(zip(datasets, file_paths)):
             frame_idx = getattr(ds, "_multiframe_frame_index", None)
@@ -848,6 +880,12 @@ class DICOMNormalizer:
                 output_ds.is_implicit_VR = getattr(full_ds, "is_implicit_VR", False)
                 if hasattr(full_ds, "file_meta") and full_ds.file_meta is not None:
                     output_ds.file_meta = full_ds.file_meta.copy()
+
+                # full_ds 被多帧共用，且 pixel_array 访问后 copy() 会产生共享 DataElement。
+                # 若不清除，设置 output_ds.PixelData 会同时修改 full_ds.PixelData，
+                # 导致后续帧提取时 len(full_ds.PixelData) 越界。
+                if (0x7fe0, 0x0010) in output_ds:
+                    del output_ds[0x7fe0, 0x0010]
 
                 # 恢复 _expand_multiframe 设置的每帧空间坐标
                 # （full_ds.copy() 会覆盖为原始多帧文件的顶层值，对多帧文件通常不正确）
@@ -914,7 +952,12 @@ class DICOMNormalizer:
                                 start = frame_idx * bytes_per_frame
                                 end = start + bytes_per_frame
                                 if end <= len(pixel_data):
-                                    output_ds.PixelData = pixel_data[start:end]
+                                    frame_bytes = pixel_data[start:end]
+                                    # 8-bit 数据缩放到 16-bit 以兼容 CT 工作站
+                                    if bits == 8:
+                                        arr = np.frombuffer(frame_bytes, dtype=np.uint8).astype(np.uint16) * 257
+                                        frame_bytes = arr.tobytes()
+                                    output_ds.PixelData = frame_bytes
                                     pixel_extracted = True
                                 else:
                                     extraction_log.append(f"uncompressed: 帧 {frame_idx} 越界 ({end} > {len(pixel_data)})")
@@ -952,9 +995,10 @@ class DICOMNormalizer:
                         else:
                             raise ValueError(f"pixel_array 维度异常: {pixel_arr.ndim}, 形状: {pixel_arr.shape}")
 
-                        # 保持原始 dtype
+                        # dtype 处理：8-bit 数据缩放到 16-bit 以兼容 CT 工作站
                         if frame_arr.dtype == np.uint8:
-                            target_dtype = np.uint8
+                            frame_arr = frame_arr.astype(np.uint16) * 257
+                            target_dtype = np.uint16
                         elif frame_arr.dtype == np.int16:
                             target_dtype = np.int16
                         else:
@@ -1005,7 +1049,24 @@ class DICOMNormalizer:
                 output_ds.is_implicit_VR = getattr(ds, "is_implicit_VR", False)
                 if hasattr(ds, "file_meta") and ds.file_meta is not None:
                     output_ds.file_meta = ds.file_meta.copy()
-                output_ds.PixelData = full_ds.PixelData
+                # 8-bit 数据缩放到 16-bit 以兼容 CT 工作站
+                raw_pixel = full_ds.PixelData
+                bits_orig = int(getattr(full_ds, 'BitsAllocated', 16))
+                if bits_orig == 8:
+                    rows = int(getattr(full_ds, 'Rows', getattr(ds, 'Rows', 0)))
+                    cols = int(getattr(full_ds, 'Columns', getattr(ds, 'Columns', 0)))
+                    samples = int(getattr(full_ds, 'SamplesPerPixel', getattr(ds, 'SamplesPerPixel', 1)))
+                    expected_len = rows * cols * samples
+                    if len(raw_pixel) >= expected_len:
+                        arr = np.frombuffer(raw_pixel[:expected_len], dtype=np.uint8).astype(np.uint16) * 257
+                        raw_pixel = arr.tobytes()
+                output_ds.PixelData = raw_pixel
+
+            # 修复 PixelData 的 VR 歧义（pydicom 的 OB or OW 无法用 Explicit VR 写入）
+            if (0x7fe0, 0x0010) in output_ds:
+                pd_item = output_ds.get_item((0x7fe0, 0x0010))
+                bits_for_vr = int(getattr(output_ds, 'BitsAllocated', 16))
+                pd_item.VR = 'OW' if bits_for_vr >= 16 else 'OB'
 
             # 确保 file_meta 存在且 Transfer Syntax 已更新
             if not hasattr(output_ds, "file_meta") or output_ds.file_meta is None:
@@ -1014,20 +1075,78 @@ class DICOMNormalizer:
             output_ds.file_meta.MediaStorageSOPInstanceUID = output_ds.SOPInstanceUID
             output_ds.file_meta.TransferSyntaxUID = target_ts
 
-            # 标准化文件命名
-            filename = f"IM{idx + 1:04d}.dcm"
-            out_path = os.path.join(output_dir, filename)
+            # 收集像素统计信息（用于后续计算窗宽窗位）
+            try:
+                bits_out = int(getattr(output_ds, 'BitsAllocated', 16))
+                dtype_out = np.uint8 if bits_out == 8 else (
+                    np.int16 if int(getattr(output_ds, 'PixelRepresentation', 0)) == 1
+                    else np.uint16
+                )
+                frame_pixels = np.frombuffer(output_ds.PixelData, dtype=dtype_out)
+                if frame_pixels.size > 0:
+                    pixel_stat_min = min(pixel_stat_min, float(frame_pixels.min()))
+                    pixel_stat_max = max(pixel_stat_max, float(frame_pixels.max()))
+            except Exception:
+                pass
 
+            # 收集到列表，稍后统一应用窗宽窗位再保存
+            output_frames.append(output_ds)
+
+        # ------------------------------------------------------------------
+        # 根据像素数据统计计算窗宽窗位，应用到所有输出帧
+        # ------------------------------------------------------------------
+        if output_frames and pixel_stat_min < pixel_stat_max:
+            # 使用 2%-98% 百分位范围计算窗宽窗位，避免极端值干扰
+            # 先采样最多 10 帧估算百分位（避免全量扫描的内存开销）
+            sample_pixels = []
+            sample_indices = np.linspace(0, len(output_frames) - 1,
+                                         min(10, len(output_frames)), dtype=int)
+            for si in sample_indices:
+                try:
+                    ds_sample = output_frames[si]
+                    bits_s = int(getattr(ds_sample, 'BitsAllocated', 16))
+                    dtype_s = np.uint8 if bits_s == 8 else (
+                        np.int16 if int(getattr(ds_sample, 'PixelRepresentation', 0)) == 1
+                        else np.uint16
+                    )
+                    arr_s = np.frombuffer(ds_sample.PixelData, dtype=dtype_s)
+                    sample_pixels.append(arr_s)
+                except Exception:
+                    pass
+
+            if sample_pixels:
+                all_pixels = np.concatenate(sample_pixels)
+                p_low = float(np.percentile(all_pixels, 2))
+                p_high = float(np.percentile(all_pixels, 98))
+                wc_computed = str(int((p_low + p_high) / 2))
+                ww_computed = str(int(p_high - p_low))
+                if int(ww_computed) < 1:
+                    ww_computed = "1"
+
+                for out_ds in output_frames:
+                    out_ds.WindowCenter = wc_computed
+                    out_ds.WindowWidth = ww_computed
+
+                if self.verbose:
+                    print(f"[窗宽窗位] 像素范围 [{pixel_stat_min:.0f}, {pixel_stat_max:.0f}], "
+                          f"2-98%=[{p_low:.0f}, {p_high:.0f}], "
+                          f"WindowCenter={wc_computed}, WindowWidth={ww_computed}")
+
+        # ------------------------------------------------------------------
+        # 保存所有输出帧
+        # ------------------------------------------------------------------
+        for idx_save, output_ds in enumerate(output_frames):
+            filename = f"IM{idx_save + 1:04d}.dcm"
+            out_path = os.path.join(output_dir, filename)
             try:
                 output_ds.save_as(out_path, write_like_original=False)
                 saved_count += 1
-                # 保存进度：75% ~ 99%
-                save_pct = 75 + int(24 * (idx + 1) / len(datasets))
+                save_pct = 75 + int(24 * (idx_save + 1) / len(output_frames))
                 self._report_progress(
-                    f"正在保存切片 {idx + 1}/{len(datasets)}...", save_pct
+                    f"正在保存切片 {idx_save + 1}/{len(output_frames)}...", save_pct
                 )
             except Exception as e:
-                failed_frames.append((frame_idx if frame_idx is not None else idx, os.path.basename(orig_path), f"保存失败: {e}"))
+                failed_frames.append((idx_save, filename, f"保存失败: {e}"))
                 if self.verbose:
                     print(f"  警告：保存失败 {filename} — {e}")
                 continue

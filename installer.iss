@@ -1,7 +1,7 @@
-; Inno Setup Installer Script for DICOM MIX Tools V4.4
+; Inno Setup Installer Script for DICOM MIX Tools V4.4.5
 
 #define MyAppName "DICOM MIX Tools"
-#define MyAppVersion "4.4.0"
+#define MyAppVersion "4.4.5"
 #define MyAppPublisher "MedicalSoftware"
 #define MyAppURL ""
 #define MyAppExeName "DICOM_MIX_Tools.exe"
@@ -20,7 +20,7 @@ LicenseFile=
 InfoBeforeFile=
 InfoAfterFile=
 OutputDir=D:\DICOM MIX Tools\dist
-OutputBaseFilename=DICOM_MIX_Tools_V4.4_Setup
+OutputBaseFilename=DICOM_MIX_Tools_V4.4.5_Setup
 SetupIconFile=D:\DICOM MIX Tools\assets\logo.ico
 Compression=lzma2
 SolidCompression=yes

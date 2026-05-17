@@ -1,5 +1,15 @@
 # DICOM MIX Tools 更新日志
 
+## v4.4.5 (2026-05-17)
+
+### 问题修复
+- **修复多帧 CBCT 归一化后所有输出图像相同**：`full_ds.pixel_array` 调用后 `Dataset.copy()` 产生共享 DataElement，设置 `output_ds.PixelData` 会同时修改 `full_ds.PixelData`，导致后续帧提取越界失败
+- **修复 PixelData VR 歧义导致保存失败**：8-bit 或 16-bit 像素数据在 Explicit VR 写入时因 VR "OB or OW" 歧义而失败或产生损坏数据
+- **修复 GE 工作站归一化后图像二值化**：原始 XA 窄窗宽（WC=0, WW=200）在 CT 工作站上显示异常，改为基于像素数据 2-98% 百分位动态计算窗宽窗位
+
+### 改进优化
+- **动态窗宽窗位计算**：归一化后根据实际像素数据统计（2%-98% 百分位）自动计算 WindowCenter/WindowWidth，适配不同数据范围
+
 ## v4.4.0 (2026-05-15)
 
 ### 问题修复
